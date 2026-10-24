@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/sdkconfig.secrets
+host/sessions/
+host/profiles/*.json
+host/models/
+.claude/

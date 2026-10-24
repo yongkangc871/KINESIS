@@ -1,0 +1,193 @@
+menu "Wrist Curl Monitor"
+
+    choice WM_LINK
+        prompt "Data link to the PC"
+        default WM_LINK_WIFI
+        help
+            Wi-Fi: binary stream over TCP (commands come back on the same socket).
+            USB: the board's USB-serial bridge (UART0). Both: send on both links.
+        config WM_LINK_WIFI
+            bool "Wi-Fi (TCP)"
+        config WM_LINK_USB
+            bool "USB serial"
+        config WM_LINK_BOTH
+            bool "Wi-Fi and USB serial"
+    endchoice
+
+    config WM_LINK_HAS_WIFI
+        bool
+        default y if WM_LINK_WIFI || WM_LINK_BOTH
+
+    config WM_LINK_HAS_USB
+        bool
+        default y if WM_LINK_USB || WM_LINK_BOTH
+
+    config WM_HOST_BAUD
+        int "USB serial baud rate (UART0 / USB bridge)"
+        depends on WM_LINK_HAS_USB
+        default 921600
+
+    choice WM_WIFI_MODE
+        prompt "Wi-Fi mode"
+        depends on WM_LINK_HAS_WIFI
+        default WM_WIFI_AP
+        help
+            Access point: the ESP32 creates its own network; connect the PC to it (no router
+            needed, the ESP32 is always 192.168.4.1). Station: the ESP32 joins an existing
+            network; the PC app finds it through a UDP broadcast beacon.
+        config WM_WIFI_AP
+            bool "Access point (ESP32 creates its own network)"
+        config WM_WIFI_STA
+            bool "Station (join an existing network)"
+    endchoice
+
+    config WM_WIFI_SSID
+        string "Network name (SSID)"
+        depends on WM_LINK_HAS_WIFI
+        default "WristMonitor"
+
+    config WM_WIFI_PASSWORD
+        string "Network password (8+ characters)"
+        depends on WM_LINK_HAS_WIFI
+        default ""
+        help
+            Not stored in the repository: set it in firmware/sdkconfig.secrets (git-ignored).
+            An access-point build without a password of 8+ characters stops with an error.
+
+    config WM_WIFI_CHANNEL
+        int "Access point channel"
+        depends on WM_WIFI_AP
+        range 1 13
+        default 6
+
+    config WM_TCP_PORT
+        int "TCP port for the data stream"
+        depends on WM_LINK_HAS_WIFI
+        default 3333
+
+    config WM_BEACON_PORT
+        int "UDP port for the discovery beacon"
+        depends on WM_LINK_HAS_WIFI
+        default 3334
+
+    config WM_EMG_ADC_CHANNEL
+        int "sEMG ADC1 channel (6 = GPIO34)"
+        range 0 7
+        default 6
+
+    config WM_EMG_RATE_HZ
+        int "sEMG sample rate (Hz, hardware timer)"
+        range 500 2000
+        default 1000
+
+    config WM_EMG_BLOCK
+        int "sEMG samples per packet"
+        range 1 50
+        default 10
+
+    choice WM_EMG_OUTPUT
+        prompt "sEMG module output type (hint for the host)"
+        default WM_EMG_OUTPUT_UNKNOWN
+        help
+            Check the Schiray module datasheet. Raw = bipolar EMG around mid-rail.
+            Envelope = rectified/smoothed output. Unknown lets the host auto-detect.
+        config WM_EMG_OUTPUT_UNKNOWN
+            bool "Unknown (host auto-detects)"
+        config WM_EMG_OUTPUT_RAW
+            bool "Raw EMG"
+        config WM_EMG_OUTPUT_ENVELOPE
+            bool "Envelope only"
+    endchoice
+
+    config WM_IMU_UART_RX
+        int "JY901S (hand) UART2 RX GPIO"
+        default 16
+
+    config WM_IMU_UART_TX
+        int "JY901S (hand) UART2 TX GPIO"
+        default 17
+
+    config WM_IMU_BAUD
+        int "JY901S baud rate after configuration"
+        default 115200
+
+    config WM_IMU_CONFIGURE
+        bool "Configure JY901S on boot (200 Hz, acc+gyro+angle, 115200 baud)"
+        default y
+
+    config WM_IMU_RATE_CODE
+        hex "JY901S RRATE code (0x09 = 100 Hz, 0x0B = 200 Hz)"
+        default 0x0B
+
+    config WM_IMU2_ENABLE
+        bool "Second JY901S on the forearm (UART1)"
+        default n
+
+    config WM_IMU2_UART_RX
+        int "Forearm JY901S UART1 RX GPIO"
+        depends on WM_IMU2_ENABLE
+        default 32
+
+    config WM_IMU2_UART_TX
+        int "Forearm JY901S UART1 TX GPIO"
+        depends on WM_IMU2_ENABLE
+        default 33
+
+    config WM_BUZZER_GPIO
+        int "Active buzzer GPIO"
+        default 25
+
+    config WM_BUZZER_ACTIVE_HIGH
+        bool "Buzzer is on when GPIO is high"
+        default n
+        help
+            Leave off for the FC-07 active buzzer module (low-level trigger: I/O low = beep).
+
+    config WM_OLED_ENABLE
+        bool "0.96in SSD1306 128x64 I2C OLED status display"
+        default y
+        help
+            Shows live IMU angles/gyro and the sEMG level. If no panel answers on I2C,
+            the firmware carries on without it.
+
+    config WM_OLED_SDA
+        int "OLED I2C SDA GPIO"
+        depends on WM_OLED_ENABLE
+        default 21
+
+    config WM_OLED_SCL
+        int "OLED I2C SCL GPIO"
+        depends on WM_OLED_ENABLE
+        default 22
+
+    config WM_OLED_ADDR
+        hex "OLED I2C address (0x3C, or 0x3D if the address jumper is moved)"
+        depends on WM_OLED_ENABLE
+        default 0x3C
+
+    config WM_OLED_REFRESH_HZ
+        int "OLED refresh rate (Hz)"
+        depends on WM_OLED_ENABLE
+        range 1 20
+        default 5
+
+    config WM_OLED_EMG_FULL_SCALE
+        int "sEMG RMS (ADC counts) that fills the OLED bar"
+        depends on WM_OLED_ENABLE
+        default 400
+
+    config WM_BATTERY_ADC_CHANNEL
+        int "Battery sense ADC1 channel (7 = GPIO35, -1 = not fitted)"
+        range -1 7
+        default 7
+        help
+            Set to -1 if the battery divider is not fitted (an open pin reads garbage).
+
+    config WM_BATTERY_DIVIDER_X100
+        int "Battery divider ratio x100 (320 = 220k over 100k, for a 9 V battery)"
+        default 320
+        help
+            (R_top + R_bottom) / R_bottom x 100. 220k/100k keeps a fresh 9.6 V battery
+            below 3.1 V at the ADC.
+
+endmenu

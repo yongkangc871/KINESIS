@@ -1,0 +1,176 @@
+# Wrist Curl Rehab Monitor - all tunable thresholds.
+# Angles in degrees, angular rates in deg/s, times in seconds, EMG activation in %RVC.
+# Per-user calibration lives in profiles/<user>.json, not here.
+
+link:
+  transport: wifi           # wifi | serial  (must match the firmware's "Data link to the PC")
+  host: auto                # ESP32 address; "auto" listens for its beacon, then tries 192.168.4.1
+  port: 3333                # TCP data port (firmware WM_TCP_PORT)
+  discovery_port: 3334      # UDP beacon port (firmware WM_BEACON_PORT)
+  discovery_timeout_s: 3
+  connect_timeout_s: 3
+  disconnect_timeout_s: 1.0 # pause the session if no data arrives for this long
+
+serial:
+  port: auto                # e.g. COM5; "auto" picks the first ESP32-like USB serial port
+  baud: 921600
+  disconnect_timeout_s: 0.5
+
+emg:
+  mode: auto                # auto | raw | envelope  (check the Schiray module output first)
+  fs_hz: 1000
+  adc_max: 4095
+  bandpass_hz: [20, 450]
+  bandpass_order: 4         # Butterworth order of each band edge
+  notch_hz: 50              # Malaysia mains
+  notch_harmonics: true     # also notch 100, 150, ... below Nyquist
+  notch_q: 30
+  dc_tau_s: 1.0             # running-mean DC removal before filtering
+  rms_window_s: 0.1
+  envelope_smooth_hz: 5     # envelope-only mode low-pass
+  onset_k_sd: 3.0           # onset threshold = rest mean + k * rest SD
+  onset_min_s: 0.05
+  sync_delay_s: 0.02        # EMG is sampled this far behind each IMU sample (arrival-order independent)
+  auto_detect:
+    hf_ratio_min: 0.4       # fraction of AC power above 20 Hz for "raw"
+    envelope_mean_max: 0.2  # mean below this fraction of full scale suggests "envelope"
+  quality:
+    window_s: 0.5
+    eval_every_s: 0.1
+    flatline_std_adc: 1.5
+    clip_margin_adc: 3
+    clip_fraction: 0.01
+    mains_ratio_max: 0.5
+    mains_min_rms_adc: 15
+    rest_noise_k: 3.0
+    jump_adc: 1000          # sample-to-sample step typical of a dry electrode lifting off
+    hold_s: 1.0             # SIGNAL_POOR stays set this long after the last failure
+
+imu:
+  rate_hz: 200
+  theta_lowpass_hz: 10
+  hinge_axis: y             # gyro axis about the wrist flexion hinge (X along hand -> fingers)
+  gap_s: 0.05               # IMU dropout if samples are further apart than this
+  hand_lever_m: 0.08        # wrist to IMU distance, used to remove expected hinge acceleration
+  forearm_imu: false        # set true when a second JY901S is fitted on the forearm
+
+calibration:
+  sensor_check_s: 3
+  max_packet_loss: 0.02
+  min_rate_fraction: 0.9    # streams must deliver >= 90 % of the nominal rate
+  rest_s: 5
+  zero_s: 3
+  top_move_s: 3             # time allowed to curl up before the hold is measured
+  top_hold_s: 3
+  rvc_s: 4
+  rvc_angle_tol_deg: 12     # the RVC hold must be within this of half the target
+  practice_reps: 3
+  still_theta_sd_deg: 1.5
+  still_gyro_dps: 8
+  start_position: neutral   # neutral | extension
+  extension_deg: 15         # used when start_position is extension
+  rom_fraction: 0.9         # target = min(target_deg, rom_fraction * personal ROM)
+  min_rom_deg: 15
+  min_rvc_sd: 5             # RVC must be at least rest mean + this many rest SDs
+
+exercise:
+  target_deg: 45
+  load_kg: 5.0
+  load_warning_kg: 3.0      # show the extra "this is heavy" warning above this load
+  reps_per_set: 12
+  sets: 3
+  max_sets: 5
+  max_reps_per_session: 60
+  max_attempts_per_set: 25
+  rest_s: 60
+  forced_rest_s: 90
+  tempo: {lift_s: 2.0, hold_s: 1.0, lower_s: 3.0, pause_s: 1.0}
+
+state_machine:
+  ready_deg: 6              # within this of the start angle = at start
+  ready_still_s: 0.3
+  still_omega_dps: 15
+  lift_start_deg: 13        # LIFTING begins above this (hysteresis vs bottom_deg)
+  bottom_deg: 10            # LOWERING ends below this; also the NOT_RETURNED limit
+  target_tol_deg: 2         # target counts as reached at target - tol
+  top_hyst_deg: 4           # leave TOP_HOLD below target - tol - hyst
+  reversal_deg: 5
+  min_attempt_deg: 20       # smaller excursions are ignored, not judged
+  omega_onset_dps: 8        # movement onset = start of the run with omega above this
+  max_rep_s: 15
+  bottom_settle_s: 0.3
+  hold_band_deg: 3          # top hold = time within this of the peak ...
+  hold_omega_dps: 3         # ... while the smoothed angular velocity is below this
+  hold_smooth_s: 0.2
+
+faults:
+  min_hold_s: 0.5
+  min_activation_pct: 30
+  max_onset_lag_s: 0.10
+  forearm_offplane_dps: 60
+  forearm_acc_g: 0.15
+  forearm_min_s: 0.04
+  forearm_imu_deg: 10
+  min_lower_s: 1.5
+  max_lower_omega_dps: 90
+  min_lift_s: 0.8
+  max_lift_omega_dps: 150
+  roll_max_deg: 20
+  yaw_max_deg: 15
+  yaw_reference: rep_start  # rep_start | calibration (JY901S yaw drifts without a magnetometer fix)
+  over_flex_margin_deg: 20  # safe max = min(target + margin, ROM + rom_margin)
+  rom_margin_deg: 5
+  sparc_min: -2.6           # JERKY if the spectral arc length is below this
+  priority: [SIGNAL_POOR, FOREARM_LIFT, NO_MUSCLE, OVER_FLEX, WRIST_TWIST, SIDE_BEND,
+             INCOMPLETE_ROM, NOT_RETURNED, TIMEOUT, EARLY_DOWN, SWING_FAST, DROP_FAST, JERKY]
+  messages: {}              # override any user message, e.g. {NO_MUSCLE: "Squeeze with your wrist"}
+
+fatigue:
+  window_deg: [10, 35]
+  baseline_reps: 3
+  ewma_alpha: 0.3
+  model: rule               # rule | json:<path> | pickle:<path>
+  welch_nperseg: 256
+  band_hz: [20, 450]
+  jasa_threshold_pct: 5
+  weights_raw: {mdf_drop: 0.5, finsm5_rise: 0.2, rms_rise: 0.2, lift_time_rise: 0.1}
+  weights_envelope: {rms_rise: 0.4, lift_time_rise: 0.3, peak_angle_drop: 0.15, sparc_drop: 0.15}
+  full_scale_pct:           # change that maps to a term of 1.0
+    mdf_drop: 20
+    finsm5_rise: 60
+    rms_rise: 40
+    lift_time_rise: 50
+    peak_angle_drop: 15
+    sparc_drop: 30
+  amber: 40
+  red: 70
+
+feedback:
+  buzzer: true
+  pc_sound: true
+  volume: 0.7
+  tts: false
+  beep_gap_s: 0.1
+  pattern_s: {ok: 0.08, bad: 0.26, long: 1.2}   # bad = two 80 ms beeps 100 ms apart
+  glow_ok_ms: 600
+  glow_bad_ms: 1200
+  message_s: 2.5
+
+safety:
+  signal_poor_pause_s: 3.0
+  battery_low_v: 7.0        # 9 V battery: warn below this (nearly flat; it sags hard under load)
+
+gui:
+  fullscreen: true
+  show_graphs: true
+  show_mdf_trend: false
+  plot_window_s: 10
+  fps: 60
+  idle_demo_s: 5
+  idle_omega_dps: 15
+  font_scale: 1.0
+
+logging:
+  enabled: true
+  dir: sessions
+  profiles_dir: profiles
