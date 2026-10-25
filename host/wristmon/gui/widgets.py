@@ -40,6 +40,47 @@ class PacerClock:
         self.captions = {**self.CAPTIONS, **(captions or {})}     # demo caption per phase
         self.start = time.monotonic() - tempo["lift_s"] - tempo["hold_s"] - tempo["lower_s"]
 
+    # Live guide (step-paced): Lift and Lower wait for the patient however long they take;
+    # only Hold and Rest are counted down. State machine states -> guide phase.
+    FOLLOW_TIMEOUT_S = 1.0          # no live frames for this long: fall back to the timed cycle
+    _STATE_PHASE = {"IDLE": "pause", "READY": "pause", "LIFTING": "lift", "TOP_HOLD": "hold",
+                    "LOWERING": "lower", "BOTTOM": "lower"}
+
+    def follow(self, state: str, theta: float, now: float | None = None):
+        """Feeds the live rep state so the guide moves on when the patient finishes each step."""
+        now = time.monotonic() if now is None else now
+        ph = self._STATE_PHASE.get(state, "pause")
+        if ph != getattr(self, "_live_phase", None):
+            self._live_phase, self._live_since = ph, now
+        self._live_theta, self._live_seen = theta, now
+
+    @property
+    def following(self) -> bool:
+        return time.monotonic() - getattr(self, "_live_seen", -math.inf) < self.FOLLOW_TIMEOUT_S
+
+    def guide(self, now: float | None = None):
+        """(name, fraction, ghost theta, seconds left or None). Step-paced while following,
+        else the timed cycle. Hold and Rest count down; once done, the next step is shown and
+        waits for the patient (Rest done -> "Lift"; Hold done -> "Lower")."""
+        now = time.monotonic() if now is None else now
+        if not self.following:
+            name, f, th, _ = self.phase(now)
+            d = dict(self.phases)[name]
+            return name, f, th, (1 - f) * d
+        dur = dict(self.phases)
+        ph, el, th = self._live_phase, now - self._live_since, self._live_theta
+        x = max(0.0, min(1.0, th / max(self.target, 1e-6)))
+        if ph in ("pause", "hold") and el >= dur[ph]:
+            ph, el = ("lift" if ph == "pause" else "lower"), 0.0
+            # The lift/lower prompt starts empty: fill = how far the patient has moved.
+            return ph, (x if ph == "lift" else 1 - x), (self.target if ph == "lift" else 0.0), None
+        if ph == "lift":
+            return ph, x, self.target, None
+        if ph == "lower":
+            return ph, 1 - x, 0.0, None
+        f = el / dur[ph] if dur[ph] > 0 else 1.0
+        return ph, f, (self.target if ph == "hold" else 0.0), max(0.0, dur[ph] - el)
+
     def sync(self, now: float | None = None):
         self.start = now if now is not None else time.monotonic()
 
@@ -1711,21 +1752,21 @@ class PacerWidget(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w = float(self.width())
         cap, big, small = self._rows()
-        name, f, _, _ = self.clock.phase()
-        durations = dict(self.clock.phases)
-        remain = max(0, math.ceil((1 - f) * durations[name] - 1e-6))
+        name, f, _, left = self.clock.guide()
+        paced = self.clock.following      # Lift / Lower go at the patient's own pace
 
         p.setPen(QColor(T.MUTED))
         p.setFont(T.font(12, caps=True))
-        p.drawText(QRectF(0, 0, w, cap), Qt.AlignmentFlag.AlignLeft, "Tempo")
+        p.drawText(QRectF(0, 0, w, cap), Qt.AlignmentFlag.AlignLeft, "Your pace" if paced else "Tempo")
         p.setPen(QColor(T.ACCENT))
         p.setFont(T.font(T.L, bold=True))
         p.drawText(QRectF(0, cap, w * 0.7, big), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    self.NAMES[name])
-        p.setPen(QColor(T.TEXT))
-        p.setFont(T.font(T.L, light=True, tabular=True))
-        p.drawText(QRectF(w * 0.5, cap, w * 0.5, big), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                   f"{remain} s")
+        if left is not None:
+            p.setPen(QColor(T.TEXT))
+            p.setFont(T.font(T.L, light=True, tabular=True))
+            p.drawText(QRectF(w * 0.5, cap, w * 0.5, big), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       f"{max(0, math.ceil(left - 1e-6))} s")
 
         gap = 6.0
         track_y, track_h = float(cap + big + self.TRACK_GAP), float(self.TRACK_H)
@@ -1747,8 +1788,9 @@ class PacerWidget(QWidget):
                 p.drawRoundedRect(seg, 4, 4)
             p.setPen(QColor(T.TEXT) if ph == name else QColor(T.FAINT))
             p.setFont(T.font(12, bold=(ph == name)))
+            timed = not paced or ph in ("hold", "pause")
             p.drawText(QRectF(x, track_y + track_h + 4, seg_w, small), Qt.AlignmentFlag.AlignLeft,
-                       f"{self.NAMES[ph]} {d:g}s")
+                       f"{self.NAMES[ph]} {d:g}s" if timed else self.NAMES[ph])
             x += seg_w + gap
         p.end()
 

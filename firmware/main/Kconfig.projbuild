@@ -99,49 +99,88 @@ menu "Wrist Curl Monitor"
             bool "Envelope only"
     endchoice
 
-    config WM_IMU_UART_RX
-        int "JY901S (hand) UART2 RX GPIO"
-        default 16
+    config WM_IMU_SDA
+        int "BNO055 I2C SDA GPIO"
+        default 26
 
-    config WM_IMU_UART_TX
-        int "JY901S (hand) UART2 TX GPIO"
-        default 17
+    config WM_IMU_SCL
+        int "BNO055 I2C SCL GPIO"
+        default 27
 
-    config WM_IMU_BAUD
-        int "JY901S baud rate after configuration"
-        default 115200
+    config WM_IMU_ADDR
+        hex "BNO055 (hand) I2C address (0x29 = ADR pin high, 0x28 = ADR low)"
+        default 0x29
 
-    config WM_IMU_CONFIGURE
-        bool "Configure JY901S on boot (200 Hz, acc+gyro+angle, 115200 baud)"
-        default y
+    config WM_IMU_I2C_HZ
+        int "BNO055 I2C clock (Hz)"
+        range 50000 400000
+        default 100000
+        help
+            The BNO055 stretches the clock; 100 kHz is the most reliable. One sample
+            (32-byte burst) takes about 3.5 ms at 100 kHz.
 
-    config WM_IMU_RATE_CODE
-        hex "JY901S RRATE code (0x09 = 100 Hz, 0x0B = 200 Hz)"
-        default 0x0B
+    config WM_IMU_PERIOD_MS
+        int "IMU sample period (ms; 20 = 50 Hz, 10 = 100 Hz, the BNO055 fusion maximum)"
+        range 10 100
+        default 20
+        help
+            Must match imu.rate_hz in host/config.yaml (rate_hz = 1000 / period).
 
-    config WM_IMU2_ENABLE
-        bool "Second JY901S on the forearm (UART1)"
+    choice WM_IMU_FUSION
+        prompt "BNO055 fusion mode"
+        default WM_IMU_FUSION_IMU
+        help
+            IMU (accelerometer + gyro): relative heading, not disturbed by an iron dumbbell.
+            NDOF: adds the magnetometer for absolute heading, but metal nearby makes yaw jump.
+        config WM_IMU_FUSION_IMU
+            bool "IMU (acc + gyro, recommended)"
+        config WM_IMU_FUSION_NDOF
+            bool "NDOF (acc + gyro + magnetometer)"
+    endchoice
+
+    config WM_IMU_EXT_CRYSTAL
+        bool "BNO055 board has a 32.768 kHz crystal (more accurate timing)"
         default n
 
-    config WM_IMU2_UART_RX
-        int "Forearm JY901S UART1 RX GPIO"
-        depends on WM_IMU2_ENABLE
-        default 32
+    config WM_IMU2_ENABLE
+        bool "Second BNO055 on the forearm (same I2C bus)"
+        default n
 
-    config WM_IMU2_UART_TX
-        int "Forearm JY901S UART1 TX GPIO"
+    config WM_IMU2_ADDR
+        hex "Forearm BNO055 I2C address (must differ from the hand IMU)"
         depends on WM_IMU2_ENABLE
-        default 33
+        default 0x28
 
     config WM_BUZZER_GPIO
-        int "Active buzzer GPIO"
+        int "Buzzer GPIO"
         default 25
+
+    config WM_BUZZER_PASSIVE
+        bool "Passive buzzer (needs a tone; turn off for an active buzzer that beeps on DC)"
+        default y
+
+    config WM_BUZZER_FREQ_HZ
+        int "Passive buzzer tone (Hz)"
+        depends on WM_BUZZER_PASSIVE
+        range 200 8000
+        default 2500
 
     config WM_BUZZER_ACTIVE_HIGH
         bool "Buzzer is on when GPIO is high"
+        default y if WM_BUZZER_PASSIVE
         default n
         help
-            Leave off for the FC-07 active buzzer module (low-level trigger: I/O low = beep).
+            On for a bare passive buzzer driven from the pin. Off for a low-level trigger
+            module such as the FC-07 (I/O low = beep); the pin then idles high.
+
+    config WM_EMG_BEEP_THRESHOLD
+        int "Standalone test: beep when the sEMG RMS rises above this (ADC counts, 0 = off)"
+        range 0 4095
+        default 150
+        help
+            Only while the PC app is not streaming, so it never mixes with the app's rep
+            feedback. Use it to check electrode placement without the PC. The OLED bar
+            shows the threshold as a tick mark.
 
     config WM_OLED_ENABLE
         bool "0.96in SSD1306 128x64 I2C OLED status display"
@@ -169,7 +208,7 @@ menu "Wrist Curl Monitor"
         int "OLED refresh rate (Hz)"
         depends on WM_OLED_ENABLE
         range 1 20
-        default 5
+        default 10
 
     config WM_OLED_EMG_FULL_SCALE
         int "sEMG RMS (ADC counts) that fills the OLED bar"

@@ -8,8 +8,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
                              QLabel, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
@@ -20,7 +20,7 @@ from ..datatypes import RepRecord
 from . import branding as B
 from . import theme as T
 from .icons import Icon, fault_icon, icon_pixmap, qicon
-from .plots import FatigueChart, LivePlots, TrendChart
+from .plots import FatigueChart, LivePlots, SessionChart, TrendChart
 from .widgets import (FatigueMeter, MessageBanner, PacerClock, PacerWidget, limb_view, placement_diagram,
                       section_label)
 
@@ -70,6 +70,14 @@ def skip_button(min_h=56) -> QPushButton:
     """Skip exercise: straight on to the next exercise of the routine."""
     b = button("Skip exercise", "secondary", min_h)
     b.setIcon(qicon("skip", T.pt(24), T.TEXT))
+    b.setIconSize(QSize(T.pt(24), T.pt(24)))
+    return b
+
+
+def results_button(min_h=56) -> QPushButton:
+    """Demo: end this exercise now and go to its summary and report, however many reps."""
+    b = button("Skip to results (demo)", "secondary", min_h)
+    b.setIcon(qicon("target", T.pt(24), T.TEXT))
     b.setIconSize(QSize(T.pt(24), T.pt(24)))
     return b
 
@@ -155,6 +163,120 @@ class IconText(QWidget):
 
     def clear(self):
         self.set("", "", T.TEXT)
+
+
+class Spinner(QWidget):
+    """Rotating arc: "working, please wait". Animates only while spinning and visible."""
+
+    def __init__(self, size=72, color=T.ACCENT, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(QSize(size, size))
+        self.color = QColor(color)
+        self.angle = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._step)
+
+    def start(self):
+        self.timer.start(16)
+        self.show()
+
+    def stop(self):
+        self.timer.stop()
+        self.hide()
+
+    def _step(self):
+        self.angle = (self.angle + 6) % 360
+        self.update()
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = max(4.0, self.width() / 11)
+        r = QRectF(self.rect()).adjusted(w, w, -w, -w)
+        p.setPen(QPen(T.qcolor(T.BORDER), w))
+        p.drawEllipse(r)
+        pen = QPen(self.color, w)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(r, int(-self.angle * 16), 100 * 16)
+        p.end()
+
+
+class SensorCheckPanel(QWidget):
+    """Beside the sensor photo in calibration step 1: says plainly what is happening.
+    Waiting -> spinner "Checking your sensors…" -> green tick "All set!" (or what to fix)."""
+
+    ROWS = (("emg", "Muscle sensor"), ("imu", "Motion sensor"), ("link", "Connection"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(14)
+        lay.addStretch(1)
+        top = QHBoxLayout()
+        top.setSpacing(16)
+        self.spinner = Spinner(T.pt(64))
+        self.big = Icon("", T.GOOD, T.pt(64))
+        top.addWidget(self.spinner)
+        top.addWidget(self.big)
+        self.headline = label("", T.L, True, align=LEFT)
+        top.addWidget(self.headline, 1)
+        lay.addLayout(top)
+        self.sub = label("", T.S, color=T.MUTED, align=LEFT)
+        lay.addWidget(self.sub)
+        self.rows = {}
+        for key, name in self.ROWS:
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            icon = Icon("dot", T.FAINT, T.pt(28))
+            text = label(name, T.M, align=LEFT)
+            state = label("", T.S, color=T.MUTED, align=LEFT)
+            row.addWidget(icon)
+            row.addWidget(text)
+            row.addStretch(1)
+            row.addWidget(state)
+            lay.addLayout(row)
+            self.rows[key] = (icon, state)
+        lay.addStretch(2)
+        self.waiting()
+
+    def _set_rows(self, icon: str, color: str, word: str):
+        for ic, st in self.rows.values():
+            ic.set_icon(icon, color)
+            st.setText(word)
+
+    def waiting(self):
+        self.spinner.stop()
+        self.big.set_icon("info", T.ACCENT)
+        self.big.show()
+        self.headline.setText("Put the sensor on")
+        self.headline.setStyleSheet(f"color: {T.TEXT};")
+        self.sub.setText("Strap it on as in the picture. The check starts by itself.")
+        self._set_rows("dot", T.FAINT, "Waiting")
+
+    def checking(self):
+        self.big.hide()
+        self.spinner.start()
+        self.headline.setText("Checking your sensors…")
+        self.headline.setStyleSheet(f"color: {T.ACCENT};")
+        self.sub.setText("Keep your arm still for a few seconds.")
+        self._set_rows("dot", T.ACCENT, "Checking…")
+
+    def result(self, passed: bool, message: str, values: dict, cfg: dict):
+        self.spinner.stop()
+        need = cfg["calibration"]["min_rate_fraction"]
+        ok = {"emg": values.get("emg_rate", 0) >= need * cfg["emg"]["fs_hz"],
+              "imu": values.get("imu_rate", 0) >= need * cfg["imu"]["rate_hz"],
+              "link": values.get("loss", 1.0) <= cfg["calibration"]["max_packet_loss"]}
+        for key, (ic, st) in self.rows.items():
+            ic.set_icon("check" if ok[key] else "cross", T.GOOD if ok[key] else T.BAD)
+            st.setText("OK" if ok[key] else "Not working")
+        self.big.set_icon("check" if passed else "cross", T.GOOD if passed else T.BAD)
+        self.big.show()
+        self.headline.setText("All set!" if passed else "Something needs fixing")
+        self.headline.setStyleSheet(f"color: {T.GOOD if passed else T.BAD};")
+        self.sub.setText("Starting calibration…" if passed else message)
 
 
 class StepDots(QWidget):
@@ -621,6 +743,7 @@ class WizardPage(QWidget):
     finished = pyqtSignal()
     back = pyqtSignal()             # Back on the first step: leave calibration
     skip = pyqtSignal()
+    results = pyqtSignal()          # demo: skip to the summary and report
     READ_S = 5                      # time to read a step before it starts by itself
     RETRY_S = 5                     # a failed step is tried again by itself after this long
 
@@ -674,6 +797,10 @@ class WizardPage(QWidget):
         self.pacer = PacerWidget(clock)
         self.pacer.setFixedWidth(T.pt(440))
         vl.addWidget(self.pacer, 0, Qt.AlignmentFlag.AlignVCenter)
+        # Step 1 only: what the check is doing, then a clear "All set!" before calibration.
+        self.check_panel = SensorCheckPanel()
+        self.check_panel.setFixedWidth(T.pt(460))
+        vl.addWidget(self.check_panel)
         vis.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay.addWidget(vis, 1)
         self.countdown = label("", T.XL, light=True, tabular=True, color=T.ACCENT, wrap=False)
@@ -691,17 +818,20 @@ class WizardPage(QWidget):
         row.setSpacing(GAP)
         self.back_btn = back_button()
         self.skip_btn = skip_button()
+        self.results_btn = results_button()
         self.start_btn = button("Start now", "good", 56)
         self.retry_btn = button("Try again now", "secondary", 56)
         self.next_btn = button("Next", "good", 56)
         row.addWidget(self.back_btn)
         row.addWidget(self.skip_btn)
+        row.addWidget(self.results_btn)
         for b in (self.start_btn, self.retry_btn, self.next_btn):
             row.addWidget(b, 1)
         bar.setFixedHeight(self.start_btn.sizeHint().height())
         lay.addWidget(bar)
         self.back_btn.clicked.connect(self._back)
         self.skip_btn.clicked.connect(self.skip.emit)
+        self.results_btn.clicked.connect(self.results.emit)
         # Hands-free: each step starts by itself, and a failed one is retried by itself.
         self.auto = AutoAdvance(self, self._start_step, self._auto_tick)
         self.start_btn.clicked.connect(self._start_step)
@@ -747,6 +877,8 @@ class WizardPage(QWidget):
         self.instruction.setText(text)
         self.visual.setCurrentWidget(self.diagram if step == "sensor_check" else self.arm)
         self.pacer.setVisible(step == "practice")
+        self.check_panel.setVisible(step == "sensor_check")
+        self.check_panel.waiting()
         self.countdown.setText("")
         self.result_row.clear()
         self.start_btn.setVisible(True)
@@ -773,6 +905,11 @@ class WizardPage(QWidget):
             if self.sim:
                 self.worker.call("queue_reps", ["good"] * self.cal["practice_reps"])
             self.countdown.setText(f"Practice rep 0 of {self.cal['practice_reps']}")
+            return
+        if self.step == "sensor_check":
+            # Nothing for the patient to get ready for: check at once, spinner on.
+            self.check_panel.checking()
+            self._begin_capture()
             return
         self.phase = "ready"
         self.t_phase = time.monotonic()
@@ -820,12 +957,15 @@ class WizardPage(QWidget):
         self.phase = "result"
         if step != "practice":       # keep "Practice rep 3 of 3" on screen with the result
             self.countdown.setText("")
+        if step == "sensor_check":
+            self.check_panel.result(res.passed, res.message, res.values, self.cfg)
         if res.passed:
             self.result_row.set("check", res.message, T.GOOD)
             if step == "top":
                 self.target = res.values.get("target_deg", self.target)
             self.next_btn.setVisible(True)
-            self.advance.start(1800)
+            # Leave the green "All set!" up long enough to be read before calibration starts.
+            self.advance.start(3000 if step == "sensor_check" else 1800)
         else:
             self.result_row.set("cross", res.message, T.BAD)
             self.retry_btn.setVisible(True)
@@ -833,8 +973,10 @@ class WizardPage(QWidget):
 
     def on_frames(self, frames):
         if frames:
-            f = frames[-1][0]
+            f, state = frames[-1]
             self.live_theta, self.live_pct = f.theta, f.env_pct
+            if self.phase == "practice":
+                self.clock.follow(state, f.theta)
 
     def on_rep(self, rep):
         if self.phase != "practice" or not rep.practice:
@@ -895,10 +1037,11 @@ class WizardPage(QWidget):
                 arm.set_state(demo=True, demo_theta=self.target / 2, ghost=None, caption=cap["rvc"])
         elif step == "practice":
             self.clock.target = self.target
-            name, _, ghost, _ = self.clock.phase(now)
             if self.phase == "practice":
+                _, _, ghost, _ = self.clock.guide(now)
                 arm.set_state(demo=False, theta=self.live_theta, ghost=ghost, caption="")
             else:
+                name, _, ghost, _ = self.clock.phase(now)
                 arm.set_state(demo=True, demo_theta=ghost, ghost=None, caption=self.clock.captions[name])
             self.pacer.update()
 
@@ -909,6 +1052,7 @@ class ExercisePage(QWidget):
     stop_requested = pyqtSignal()
     back = pyqtSignal()
     skip = pyqtSignal()
+    results = pyqtSignal()          # demo: skip to the summary and report
 
     def __init__(self, cfg: dict, clock: PacerClock, ex: EX.Exercise | None = None):
         super().__init__()
@@ -937,8 +1081,11 @@ class ExercisePage(QWidget):
         back.clicked.connect(self.back.emit)
         skip = skip_button(44)
         skip.clicked.connect(self.skip.emit)
+        results = results_button(44)
+        results.clicked.connect(self.results.emit)
         nav.addWidget(back)
         nav.addWidget(skip)
+        nav.addWidget(results)
         top.addLayout(nav)
         info, il = card(margins=(20, 14, 20, 14), spacing=4)
         il.addWidget(section_label("Set"))
@@ -1032,10 +1179,11 @@ class ExercisePage(QWidget):
             if abs(f.omega) > moving_dps or state in ("LIFTING", "TOP_HOLD", "LOWERING"):
                 self.last_move = now
             if state == "LIFTING" and self.prev_state != "LIFTING":
-                # Pacer + ghost follow the patient's own start. The lift is detected some
+                # The idle demo restarts from the patient's own start. The lift is detected some
                 # degrees up, so place the guide where its lift reaches this angle.
                 self.clock.sync(now - self.clock.lift_elapsed(f.theta))
             self.prev_state = state
+            self.clock.follow(state, f.theta, now)   # live guide moves on with each finished step
         f = frames[-1][0]
         self.theta, self.pct = f.theta, f.env_pct
         self.frame_count += len(frames)
@@ -1064,13 +1212,14 @@ class ExercisePage(QWidget):
         idle_s = self.cfg["gui"]["idle_demo_s"]
         still_for = now - self.last_move
         demo = still_for > idle_s or (self.reps_this_set == 0 and still_for > 0.7)
-        name, _, ghost, _ = self.clock.phase(now)
-        self.arm.phase_text = "Rest phase" if name == "pause" else "Active phase"
         if demo:
+            name, _, ghost, _ = self.clock.phase(now)
             self.arm.set_state(demo=True, demo_theta=ghost, caption=self.clock.captions[name],
                                env_pct=self.pct)
         else:
+            name, _, ghost, _ = self.clock.guide(now)
             self.arm.set_state(demo=False, theta=self.theta, ghost=ghost, caption="", env_pct=self.pct)
+        self.arm.phase_text = "Rest phase" if name == "pause" else "Active phase"
         self.pacer.update()
         if self.banner.expired() and self.banner.text.text() != MessageBanner.NEUTRAL:
             self.banner.neutral(MessageBanner.NEUTRAL)
@@ -1085,6 +1234,7 @@ class _MessagePage(QWidget):
     """Centered icon, title, explanation, Back, Skip exercise and two actions."""
     back = pyqtSignal()
     skip = pyqtSignal()
+    results = pyqtSignal()          # demo: skip to the summary and report
 
     def __init__(self, secondary_text: str, primary_text: str):
         super().__init__()
@@ -1110,10 +1260,13 @@ class _MessagePage(QWidget):
         back.clicked.connect(self.back.emit)
         skip = skip_button()
         skip.clicked.connect(self.skip.emit)
+        results = results_button()
+        results.clicked.connect(self.results.emit)
         self.secondary = button(secondary_text, "secondary", 56)
         self.primary = button(primary_text, "good", 56)
         row.addWidget(back)
         row.addWidget(skip)
+        row.addWidget(results)
         row.addWidget(self.secondary)
         row.addWidget(self.primary)
         col.addLayout(row)
@@ -1244,8 +1397,10 @@ class SummaryPage(QWidget):
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
         charts, cl = card(QHBoxLayout, margins=(12, 10, 12, 10), spacing=GAP)
+        self.session_chart = SessionChart(cfg)          # whole session: angle + muscle, reps shaded
+        cl.addWidget(self.session_chart, 3)
         self.chart = FatigueChart(cfg)
-        cl.addWidget(self.chart)
+        cl.addWidget(self.chart, 2)
         self.mdf = TrendChart("MDF (Hz)")
         self.mdf.setVisible(cfg["gui"]["show_mdf_trend"])
         cl.addWidget(self.mdf)
@@ -1258,10 +1413,15 @@ class SummaryPage(QWidget):
         back.clicked.connect(self.back.emit)
         exp = button("Save as CSV", "secondary")
         exp.clicked.connect(self._export)
+        self.report_btn = button("Open report", "secondary")
+        self.report_btn.clicked.connect(self._open_report)
+        self.report_btn.setEnabled(False)
+        self.report_path = None
         self.fin = button("Finish", "good")
         self.fin.clicked.connect(self.done.emit)
         row.addWidget(back)
         row.addWidget(exp)
+        row.addWidget(self.report_btn)
         row.addWidget(self.fin)
         lay.addLayout(row)
 
@@ -1288,8 +1448,10 @@ class SummaryPage(QWidget):
             self.auto.stop()
         super().hideEvent(ev)
 
-    def show_summary(self, summary: dict, reps: list[RepRecord]):
+    def show_summary(self, summary: dict, reps: list[RepRecord], trace: list | None = None,
+                     target: float = 45.0):
         self.reps = reps
+        self.session_chart.set_session(trace or [], reps, target)
         self.vals["valid"].setText(str(summary.get("valid", 0)))
         self.vals["invalid"].setText(str(summary.get("invalid", 0)))
         fault = summary.get("most_common_fault", "")
@@ -1303,6 +1465,17 @@ class SummaryPage(QWidget):
         self.vals["angle"].setText(f"{ang:.0f}°" if ang == ang else "–")
         self.chart.set_points(summary.get("fatigue_curve", []))
         self.mdf.set_points(summary.get("mdf_curve", []))
+
+    def set_report(self, path):
+        """The session report written for this summary (None if writing it failed)."""
+        self.report_path = path
+        self.report_btn.setEnabled(path is not None)
+        if path is not None:
+            self.saved.setText(f"Report saved to {path}")
+
+    def _open_report(self):
+        if self.report_path is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.report_path)))
 
     def _export(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save reps as CSV", "reps.csv", "CSV files (*.csv)")

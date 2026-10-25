@@ -17,13 +17,13 @@
 
 // Screen layout (21 x 8 characters):
 //   0  BAT 9.1V      PC:ON    (WRIST MON if no battery sense; PC:ON = app streaming)
-//   1  Roll   177.0
-//   2  Pitch   -3.2
+//   1  Roll   177.0   S3G3    (BNO055 calibration 0-3: system, gyro,
+//   2  Pitch   -3.2   A3M0     accelerometer, magnetometer)
 //   3  Yaw     40.1
 //   4  Gyr   1  -30    0      (deg/s x y z)
 //   5  EMG raw 2048
 //   6  EMG rms  123
-//   7  [#######    |      ]   (rms bar; on Wi-Fi shows "IP 192.168.4.1" until the PC connects)
+//   7  [#######    |      ]   (rms bar, | = beep threshold; on Wi-Fi shows "IP 192.168.4.1" until the PC connects)
 static void draw(void)
 {
     char line[OLED_COLS + 1];
@@ -43,9 +43,12 @@ static void draw(void)
     oled_text(0, 0, line);
 
     if (sensor_state_get_imu(0, &imu)) {
-        snprintf(line, sizeof(line), "Roll  %7.1f", imu.angle[0] * ANGLE_SCALE);
+        const uint8_t c = imu.calib;
+        snprintf(line, sizeof(line), "Roll  %7.1f  S%dG%d", imu.angle[0] * ANGLE_SCALE,
+                 (c >> 6) & 3, (c >> 4) & 3);
         oled_text(0, 1, line);
-        snprintf(line, sizeof(line), "Pitch %7.1f", imu.angle[1] * ANGLE_SCALE);
+        snprintf(line, sizeof(line), "Pitch %7.1f  A%dM%d", imu.angle[1] * ANGLE_SCALE,
+                 (c >> 2) & 3, c & 3);
         oled_text(0, 2, line);
         snprintf(line, sizeof(line), "Yaw   %7.1f", imu.angle[2] * ANGLE_SCALE);
         oled_text(0, 3, line);
@@ -54,7 +57,7 @@ static void draw(void)
         oled_text(0, 4, line);
     } else {
         oled_text(0, 2, "IMU: no data");
-        oled_text(0, 3, "check JY901S wiring");
+        oled_text(0, 3, "check BNO055 wiring");
     }
 
 #if CONFIG_WM_IMU2_ENABLE
@@ -70,7 +73,9 @@ static void draw(void)
         oled_text(0, 5, line);
         snprintf(line, sizeof(line), "EMG rms %4d", (int)emg.rms);
         oled_text(0, 6, line);
-        oled_bar(7, emg.rms / (float)CONFIG_WM_OLED_EMG_FULL_SCALE, -1.0f);
+        oled_bar(7, emg.rms / (float)CONFIG_WM_OLED_EMG_FULL_SCALE,
+                 CONFIG_WM_EMG_BEEP_THRESHOLD > 0
+                     ? CONFIG_WM_EMG_BEEP_THRESHOLD / (float)CONFIG_WM_OLED_EMG_FULL_SCALE : -1.0f);
     } else {
         oled_text(0, 6, "EMG: no data");
     }
@@ -89,9 +94,18 @@ static void display_task(void *arg)
 {
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_WM_OLED_REFRESH_HZ);
     TickType_t last = xTaskGetTickCount();
+    // A supply dip (e.g. Wi-Fi TX bursts) or I2C noise can scramble or freeze the SSD1306;
+    // it only gets its setup at boot, so re-send it on any failed frame and every few seconds.
+    const int refresh_every = 3 * CONFIG_WM_OLED_REFRESH_HZ;
+    int frames = 0;
+    bool ok = true;
     for (;;) {
+        if (!ok || ++frames >= refresh_every) {
+            frames = 0;
+            oled_refresh_config();
+        }
         draw();
-        oled_flush();
+        ok = oled_flush();
         vTaskDelayUntil(&last, period);
     }
 }

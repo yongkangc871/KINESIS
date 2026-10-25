@@ -1,5 +1,5 @@
-// Active buzzer driven by a GPIO. Patterns are queued and played one at a time,
-// so beeps never overlap.
+// Buzzer on a GPIO: a PWM tone for a passive buzzer, or plain on/off for an active one.
+// Patterns are queued and played one at a time, so beeps never overlap.
 #pragma once
 
 typedef enum {

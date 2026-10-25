@@ -1,6 +1,6 @@
 // Wrist Curl Rehab Monitor - ESP32 acquisition firmware.
 //
-// Streams sEMG (ADC, hardware-timed) and JY901S IMU samples to the host over Wi-Fi (TCP)
+// Streams sEMG (ADC, hardware-timed) and BNO055 IMU samples to the host over Wi-Fi (TCP)
 // and/or USB serial, all timestamped on esp_timer, drives the buzzer on host command, and
 // shows live sensor values on the optional SSD1306 OLED.
 #include "freertos/FreeRTOS.h"
@@ -12,7 +12,7 @@
 #include "sdkconfig.h"
 #include "protocol.h"
 #include "host_link.h"
-#include "jy901s.h"
+#include "bno055.h"
 #include "emg_adc.h"
 #include "buzzer.h"
 #include "display.h"
@@ -93,8 +93,8 @@ static void status_task(void *arg)
         wm_put_u16(&p[4], mv);
         uint8_t flags = 0;
         if (host_link_streaming()) flags |= WM_STATUS_STREAMING;
-        if (jy901s_alive(0)) flags |= WM_STATUS_IMU_OK;
-        if (jy901s_alive(1)) flags |= WM_STATUS_IMU2_PRESENT;
+        if (bno055_alive(0)) flags |= WM_STATUS_IMU_OK;
+        if (bno055_alive(1)) flags |= WM_STATUS_IMU2_PRESENT;
         p[6] = flags;
         p[7] = EMG_HINT;
         p[8] = WM_FW_VERSION;
@@ -113,9 +113,9 @@ void app_main(void)
     battery_init();
 #endif
 
-    jy901s_start(UART_NUM_2, CONFIG_WM_IMU_UART_RX, CONFIG_WM_IMU_UART_TX, 0);
+    bno055_start(CONFIG_WM_IMU_SDA, CONFIG_WM_IMU_SCL, CONFIG_WM_IMU_ADDR, 0);
 #if CONFIG_WM_IMU2_ENABLE
-    jy901s_start(UART_NUM_1, CONFIG_WM_IMU2_UART_RX, CONFIG_WM_IMU2_UART_TX, 1);
+    bno055_start(CONFIG_WM_IMU_SDA, CONFIG_WM_IMU_SCL, CONFIG_WM_IMU2_ADDR, 1);
 #endif
     emg_adc_start(s_adc);
     xTaskCreatePinnedToCore(status_task, "status", 3072, NULL, 3, NULL, 0);

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow, QSlider, QStacked
 from .. import exercises as EX
 from ..calibration import FULL_STEPS, QUICK_STEPS, Profile, steps_for
 from ..config import resolve_dir
+from ..report import write_report
 from . import theme as T
 from .audio import HostAudio, Speaker
 from .branding import APP_NAME, Backdrop
@@ -41,11 +43,13 @@ class MainWindow(QMainWindow):
         self.profile = profile
         self.user_name = profile.user if profile else ""
         self.reps = []
+        self.trace: list[tuple] = []           # (t, theta, env_pct) for every frame of the sets
         self.shown_set = 0
         self.page_before_pause = None
         self.routine: EX.Routine | None = None     # the routine while it runs
         self.routine_idx = 0
         self._skipping = False                     # Skip exercise: go on without the summary
+        self.session_dir: str | None = None        # the logger's folder; the report goes there
         self.setWindowTitle(APP_NAME)
 
         # Pipeline runs in its own thread.
@@ -165,6 +169,8 @@ class MainWindow(QMainWindow):
         self.load_page.back.connect(self._load_back)
         for page in (self.load_page, self.wizard, self.exercise, self.rest, self.pause_page):
             page.skip.connect(self._skip_exercise)
+        for page in (self.wizard, self.exercise, self.rest, self.pause_page):
+            page.results.connect(self._skip_to_results)
         self.wizard.finished.connect(self._on_wizard_done)
         self.wizard.back.connect(lambda: self.stack.setCurrentWidget(self.load_page))
         self.exercise.stop_requested.connect(self.emergency_stop)
@@ -255,7 +261,9 @@ class MainWindow(QMainWindow):
         if not ex.uses_weight:
             self.profile.load_kg = 0.0
         self.reps = []
+        self.trace = []
         self.shown_set = 0
+        self.session_dir = None             # the worker reports the new folder ("logging")
         self.worker.call("begin_session", copy.deepcopy(self.profile), True)
         self.load_page.set_kg(self.profile.load_kg)
         self.load_page.set_returning(self.profile.ready)
@@ -281,6 +289,26 @@ class MainWindow(QMainWindow):
 
     def _end_session(self):
         self.worker.call("session_action", "finish")
+
+    def _skip_to_results(self):
+        """Demo: end this exercise now and show its summary and report, however many reps
+        (even none) were counted. Inside a routine the summary still offers the next exercise."""
+        self._skipping = False
+        self.worker.call("cancel_capture")
+        self._end_session()
+
+    def _write_report(self, summary: dict):
+        root = Path(self.session_dir) if self.session_dir else resolve_dir(self.cfg, "dir") / "reports"
+        name = "report.html" if self.session_dir else f"report_{time.strftime('%Y%m%d_%H%M%S')}.html"
+        emg_mode = self.profile.emg_mode if self.profile else self.cfg["emg"]["mode"]
+        try:
+            path = write_report(root / name, summary, self.reps, self.cfg, self.user_name or "guest",
+                                EX.get(self.exercise_key).title, emg_mode, self.profile, self.trace,
+                                self.session_dir)
+        except Exception as e:      # the summary must still show if the report cannot be written
+            self._on_error(f"report: {e}")
+            path = None
+        self.summary.set_report(path)
 
     def _resume(self):
         self.worker.call("session_action", "resume")
@@ -333,6 +361,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ worker signals
     def _on_frames(self, frames):
+        if self.shown_set > 0:          # from the first set on: the whole-session graph
+            self.trace.extend((f.t, f.theta, f.env_pct) for f, _ in frames)
         cur = self.stack.currentWidget()
         if cur is self.exercise:
             self.exercise.on_frames(frames)
@@ -386,7 +416,9 @@ class MainWindow(QMainWindow):
                 self._skipping = False
                 self._advance_routine()
                 return
-            self.summary.show_summary(payload or {}, list(self.reps))
+            target = self.profile.target_deg if self.profile else self.cfg["exercise"]["target_deg"]
+            self.summary.show_summary(payload or {}, list(self.reps), self.trace, target)
+            self._write_report(payload or {})
             if self.routine is not None:
                 i, n = self.routine_idx, len(self.routine.keys)
                 nxt = EX.get(self.routine.keys[i + 1]).title if i + 1 < n else ""
@@ -398,6 +430,7 @@ class MainWindow(QMainWindow):
             self.pause_page.show_reason(payload)
             self.stack.setCurrentWidget(self.pause_page)
         elif name == "logging":
+            self.session_dir = payload
             self.status_labels["fps"].setToolTip(f"Logging to {payload}")
 
     def _on_calibration(self, step, res):

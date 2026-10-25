@@ -77,7 +77,7 @@ def run_simulated_session(cfg: dict, kinds: list[str], emg_mode: str = "raw", se
                           profile: Profile | None = None, steps=FULL_STEPS, **patient_kw) -> RunResult:
     """Full flow: calibration wizard steps -> practice -> one exercise set doing `kinds`."""
     src = SimSource(seed=seed, emg_mode=emg_mode, realtime=False,
-                    forearm_imu=cfg["imu"]["forearm_imu"], **patient_kw)
+                    forearm_imu=cfg["imu"]["forearm_imu"], imu_fs=cfg["imu"]["rate_hz"], **patient_kw)
     src.patient.isometric = emg_driven(cfg)
     logger = SessionLogger(log_root, user, cfg) if log_root else None
     pipe = Pipeline(cfg, profile or Profile(user=user), logger=logger, send_command=src.write)

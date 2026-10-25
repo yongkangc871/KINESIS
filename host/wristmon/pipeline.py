@@ -16,7 +16,7 @@ import numpy as np
 
 from .calibration import CalibrationManager, Profile, StepResult, apply_result, emg_driven
 from .conditioning import (GYRO_AXES, EmgConditioner, EmgQuality, ImuConditioner, TimeRing,
-                           gravity_in_sensor, wrap180)
+                           gravity_in_sensor, hinge_angle, wrap180)
 from .config import HOST_DIR
 from .datatypes import DeviceStatus, EmgBlock, Frame, ImuSample, RawFrame, RepRecord
 from .fatigue import FatigueScorer, load_fatigue_model, zone_for
@@ -107,6 +107,14 @@ class Pipeline:
             self.apply_profile(self.profile)
             self._emit("emg_mode", mode)
 
+    @property
+    def _grav0(self) -> np.ndarray:
+        """Gravity in the sensor frame at the zero pose (the zero step updates the profile in place)."""
+        key = (self.profile.roll0, self.profile.pitch0)
+        if getattr(self, "_grav0_key", None) != key:
+            self._grav0_key, self._grav0_val = key, gravity_in_sensor(*key)
+        return self._grav0_val
+
     def apply_profile(self, p: Profile):
         self.profile = p
         if math.isfinite(p.rest_mean):
@@ -151,7 +159,7 @@ class Pipeline:
         if self.logger:
             self.logger.log_imu(s)
         self.now = max(self.now, s.t)
-        pitch_f, gap = self.imu.process(s)
+        pitch_f, gap, grav_f = self.imu.process(s)
         if s.imu_id == 1:
             self.fa_pitch = pitch_f
             return
@@ -169,7 +177,7 @@ class Pipeline:
         raw = RawFrame(t=s.t, pitch=pitch_f, pitch_raw=s.pitch, roll=s.roll, yaw=s.yaw,
                        gyro=(s.gx, s.gy, s.gz), acc=(s.ax, s.ay, s.az), env=env,
                        emg_ok=emg_ok, imu_ok=not gap,
-                       fa_pitch=self.fa_pitch if self.forearm_imu else NAN)
+                       fa_pitch=self.fa_pitch if self.forearm_imu else NAN, grav=grav_f)
         frame = self.make_frame(raw, active, onset)
 
         if self.capture is not None:
@@ -185,16 +193,24 @@ class Pipeline:
 
     def make_frame(self, raw: RawFrame, active: bool, onset: float) -> Frame:
         p = self.profile
-        d = wrap180(raw.pitch - p.pitch0)
-        fa_dev = NAN
-        if self.forearm_imu and math.isfinite(raw.fa_pitch):
-            # Assumes the forearm IMU is mounted with the same axis orientation as the hand IMU.
-            fa_dev = wrap180(raw.fa_pitch - p.fa_pitch0)
-            d -= fa_dev
-        theta = p.flex_sign * d + p.start_angle
         g = raw.gyro
-        omega = p.omega_sign * g[self.hinge]
-        offplane = math.hypot(*[g[i] for i in range(3) if i != self.hinge])
+        fa_dev = NAN
+        if p.hinge is not None:
+            # Rotation about the calibrated joint axis: independent of how the sensor is worn.
+            h = np.asarray(p.hinge, float)
+            d = hinge_angle(raw.grav, self._grav0, h)
+            w = np.asarray(g, float)
+            omega = float(np.dot(w, h))
+            offplane = float(np.linalg.norm(w - omega * h))
+        else:
+            d = wrap180(raw.pitch - p.pitch0)
+            if self.forearm_imu and math.isfinite(raw.fa_pitch):
+                # Assumes the forearm IMU is mounted with the same axis orientation as the hand IMU.
+                fa_dev = wrap180(raw.fa_pitch - p.fa_pitch0)
+                d -= fa_dev
+            omega = p.omega_sign * g[self.hinge]
+            offplane = math.hypot(*[g[i] for i in range(3) if i != self.hinge])
+        theta = p.flex_sign * d + p.start_angle
         acc_resid = self._acc_residual(raw, omega)
         if math.isfinite(p.rvc) and p.rvc > p.emg_offset:
             env_pct = (raw.env - p.emg_offset) / (p.rvc - p.emg_offset) * 100.0

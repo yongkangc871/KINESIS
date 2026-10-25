@@ -312,17 +312,25 @@ class ImuConditioner:
     def __init__(self, imu_cfg: dict):
         self.cfg = imu_cfg
         self.lp = {}
+        self.grav_lp = {}
         self.last_t = {}
 
     def process(self, s):
-        """Returns (pitch_filtered, gap_before) for an ImuSample."""
+        """Returns (pitch_filtered, gap_before, gravity_filtered) for an ImuSample.
+
+        Gravity (in the sensor frame, from roll/pitch) is filtered per component, so unlike
+        roll it never wraps at +-180 and unlike pitch it is not limited to +-90."""
         lp = self.lp.get(s.imu_id)
         if lp is None:
-            lp = self.lp[s.imu_id] = ScalarLowPass(self.cfg["theta_lowpass_hz"], self.cfg["rate_hz"])
+            fc, fs = self.cfg["theta_lowpass_hz"], self.cfg["rate_hz"]
+            lp = self.lp[s.imu_id] = ScalarLowPass(fc, fs)
+            self.grav_lp[s.imu_id] = [ScalarLowPass(fc, fs) for _ in range(3)]
         last = self.last_t.get(s.imu_id)
         gap = last is not None and (s.t - last) > self.cfg["gap_s"]
         self.last_t[s.imu_id] = s.t
-        return lp.step(s.pitch), gap
+        g = gravity_in_sensor(s.roll, s.pitch)
+        grav = tuple(f.step(float(v)) for f, v in zip(self.grav_lp[s.imu_id], g))
+        return lp.step(s.pitch), gap, grav
 
 
 GYRO_AXES = {"x": 0, "y": 1, "z": 2}
@@ -334,6 +342,29 @@ def gravity_in_sensor(roll_deg: float, pitch_deg: float, signs=(1, 1, 1)) -> np.
     return np.array([-math.sin(p) * signs[0],
                      math.sin(r) * math.cos(p) * signs[1],
                      math.cos(r) * math.cos(p) * signs[2]])
+
+
+def hinge_angle(grav, grav0, hinge) -> float:
+    """Signed rotation (deg) of the sensor about the unit `hinge` axis (sensor frame) since the
+    pose where gravity read `grav0`. Works for any mounting, as long as the hinge is not
+    vertical (then gravity does not change as the joint bends)."""
+    h = np.asarray(hinge, float)
+    g = np.asarray(grav, float)
+    g0 = np.asarray(grav0, float)
+    gp = g - np.dot(g, h) * h
+    g0p = g0 - np.dot(g0, h) * h
+    # Turning the sensor by +theta about h turns gravity, seen from the sensor, by -theta.
+    return math.degrees(math.atan2(float(np.dot(h, np.cross(gp, g0p))), float(np.dot(g0p, gp))))
+
+
+def principal_axis(gyro) -> np.ndarray | None:
+    """Unit axis the gyro turned about most (sign arbitrary), from samples that are moving."""
+    w = np.asarray(gyro, float)
+    w = w[np.linalg.norm(w, axis=1) > 15]
+    if len(w) < 5:
+        return None
+    vals, vecs = np.linalg.eigh(w.T @ w)
+    return vecs[:, -1]
 
 
 class TimeRing:

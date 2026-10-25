@@ -61,6 +61,7 @@ class RawFrame:
     emg_ok: bool
     imu_ok: bool
     fa_pitch: float = NAN   # forearm IMU pitch, if fitted
+    grav: tuple = (NAN, NAN, NAN)   # low-passed gravity in the sensor frame (g)
 
 
 @dataclass

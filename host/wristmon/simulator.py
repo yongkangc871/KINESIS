@@ -1,4 +1,4 @@
-"""Virtual patient: synthesises JY901S + sEMG streams for demos, tuning and tests.
+"""Virtual patient: synthesises IMU (JY901 units) + sEMG streams for demos, tuning and tests.
 
 It follows the calibration instructions (`set_behaviour`) and performs queued rep kinds,
 including every fault, with progressive fatigue (EMG spectrum compresses, amplitude rises,
@@ -16,7 +16,7 @@ from scipy import signal
 from .conditioning import gravity_in_sensor
 
 EMG_FS = 1000
-IMU_FS = 200
+IMU_FS = 200    # default IMU rate; the apps pass imu.rate_hz from config.yaml
 BLOCK = 10      # EMG samples per packet (10 ms)
 
 # Rep kinds the patient can perform, as overrides of the nominal good rep.
@@ -79,8 +79,9 @@ class RepSpan:
 class VirtualPatient:
     def __init__(self, seed: int = 0, emg_mode: str = "raw", target_deg: float = 45.0,
                  rom_deg: float = 52.0, fatigue_reps: int = 40, forearm_imu: bool = False,
-                 tempo: dict | None = None):
+                 tempo: dict | None = None, imu_fs: float = IMU_FS):
         self.rng = np.random.default_rng(seed)
+        self.imu_fs = imu_fs
         self.emg_mode = emg_mode
         self.target = target_deg
         self.rom = rom_deg
@@ -91,6 +92,8 @@ class VirtualPatient:
         self.fatigue_reps = fatigue_reps
         self.forearm_imu = forearm_imu
         self.t = 1.0                      # device clock, s
+        self._imu_t0 = self.t             # IMU sample k is at _imu_t0 + k / imu_fs
+        self._imu_k = 0
         self.segments: deque[Segment] = deque()
         self.behaviour = "idle"
         self.queue: deque[str] = deque()
@@ -340,8 +343,10 @@ class VirtualPatient:
         times = self.t + np.arange(BLOCK) / EMG_FS
         emg = self._emg_block(times)
         imu = []
-        for k in range(BLOCK * IMU_FS // EMG_FS):
-            ti = self.t + k / IMU_FS
+        t_end = self.t + BLOCK / EMG_FS
+        # Any rate works, including ones that do not divide the 10 ms block (50 Hz = every 2nd).
+        while (ti := self._imu_t0 + self._imu_k / self.imu_fs) < t_end - 1e-9:
+            self._imu_k += 1
             hand, fore = self._imu_sample(ti)
             imu.append((ti, 0, hand))
             if fore is not None:

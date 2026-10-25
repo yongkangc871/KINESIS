@@ -407,8 +407,12 @@ EXERCISES: dict[str, Exercise] = {
                          "tempo": {"lift_s": 2.0, "hold_s": 1.0, "lower_s": 3.0, "pause_s": 1.0}},
             "imu": {"hand_lever_m": 0.25},          # elbow to the sensor
             "calibration": {"rom_fraction": 0.95},
+            # The forearm overshoots and drifts back a few degrees at the top of a curl, so a
+            # real 1 s hold left only ~0 s "still near the peak" with the wrist limits (4°, 5 °/s).
+            # Looser detection, and a longer minimum so a curl without a pause still fails.
+            "state_machine": {"hold_band_deg": 8, "hold_omega_dps": 10},
             "faults": {"roll_max_deg": 1000, "yaw_max_deg": 1000, "forearm_acc_g": 0.3,
-                       "forearm_offplane_dps": 90,
+                       "forearm_offplane_dps": 90, "min_hold_s": 0.75,
                        "messages": {
                            "INCOMPLETE_ROM": "Bend your elbow a little more",
                            "EARLY_DOWN": "Hold at the top for a moment",

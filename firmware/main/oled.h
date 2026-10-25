@@ -18,3 +18,5 @@ void oled_text(int col, int row, const char *s);
 void oled_bar(int row, float frac, float marker);
 // Sends the framebuffer to the panel (~25 ms at 400 kHz).
 bool oled_flush(void);
+// Re-sends the panel setup (no blanking), recovering a panel that glitched or reset on its own.
+bool oled_refresh_config(void);

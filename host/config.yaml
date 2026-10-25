@@ -41,18 +41,18 @@ emg:
     clip_margin_adc: 3
     clip_fraction: 0.01
     mains_ratio_max: 0.5
-    mains_min_rms_adc: 15
+    mains_min_rms_adc: 40     # the notch filter removes smaller hum; 15 flagged ordinary rest hum
     rest_noise_k: 3.0
     jump_adc: 1000          # sample-to-sample step typical of a dry electrode lifting off
     hold_s: 1.0             # SIGNAL_POOR stays set this long after the last failure
 
 imu:
-  rate_hz: 200
+  rate_hz: 50               # BNO055 sample rate; must match WM_IMU_PERIOD_MS (1000 / 20 ms)
   theta_lowpass_hz: 10
   hinge_axis: y             # gyro axis about the wrist flexion hinge (X along hand -> fingers)
   gap_s: 0.05               # IMU dropout if samples are further apart than this
   hand_lever_m: 0.08        # wrist to IMU distance, used to remove expected hinge acceleration
-  forearm_imu: false        # set true when a second JY901S is fitted on the forearm
+  forearm_imu: false        # set true when a second BNO055 is fitted on the forearm
 
 calibration:
   sensor_check_s: 3
@@ -97,24 +97,24 @@ state_machine:
   reversal_deg: 5
   min_attempt_deg: 20       # smaller excursions are ignored, not judged
   omega_onset_dps: 8        # movement onset = start of the run with omega above this
-  max_rep_s: 15
+  max_rep_s: 20             # slow lifts by older users are not a timeout
   bottom_settle_s: 0.3
-  hold_band_deg: 3          # top hold = time within this of the peak ...
-  hold_omega_dps: 3         # ... while the smoothed angular velocity is below this
+  hold_band_deg: 4          # top hold = time within this of the peak ...
+  hold_omega_dps: 5         # ... while the smoothed angular velocity is below this
   hold_smooth_s: 0.2
 
 faults:
   min_hold_s: 0.5
-  min_activation_pct: 30
-  max_onset_lag_s: 0.10
+  min_activation_pct: 25
+  max_onset_lag_s: 0.15
   forearm_offplane_dps: 60
   forearm_acc_g: 0.15
   forearm_min_s: 0.04
   forearm_imu_deg: 10
-  min_lower_s: 1.5
-  max_lower_omega_dps: 90
-  min_lift_s: 0.8
-  max_lift_omega_dps: 150
+  min_lower_s: 1.0
+  max_lower_omega_dps: 120
+  min_lift_s: 0.6
+  max_lift_omega_dps: 180
   roll_max_deg: 20
   yaw_max_deg: 15
   yaw_reference: rep_start  # rep_start | calibration (JY901S yaw drifts without a magnetometer fix)

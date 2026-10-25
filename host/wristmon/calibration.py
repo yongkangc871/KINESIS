@@ -15,7 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .conditioning import circular_mean_deg, detect_emg_mode, gravity_in_sensor, wrap180, GYRO_AXES
+from .conditioning import (circular_mean_deg, detect_emg_mode, gravity_in_sensor, hinge_angle,
+                           principal_axis, wrap180, GYRO_AXES)
 from .datatypes import RawFrame
 
 NAN = float("nan")
@@ -59,6 +60,10 @@ class Profile:
     fa_pitch0: float = 0.0
     flex_sign: int = 1           # theta = flex_sign * (pitch - pitch0) + start_angle
     omega_sign: int = 1          # omega = omega_sign * gyro[hinge]
+    # Joint axis in the sensor frame, found in the top step and oriented so flexion is +.
+    # When set, theta is the rotation about it (any mounting) and omega = gyro . hinge;
+    # None (older profiles) keeps the pitch formula above.
+    hinge: list | None = None
     gravity_signs: list | None = None   # accelerometer model; None = magnitude-only check
     rom_deg: float = NAN
     target_deg: float = 45.0
@@ -134,8 +139,13 @@ def _still(frames, cal: dict) -> tuple[bool, float, float]:
     return (sd < cal["still_theta_sd_deg"] and g < cal["still_gyro_dps"]), sd, g
 
 
-def _theta_raw(frames, profile: Profile, forearm: bool) -> np.ndarray:
-    """Pitch change from the zero pose, before the flexion sign is known."""
+def _theta_raw(frames, profile: Profile, forearm: bool, hinge=None) -> np.ndarray:
+    """Angle change from the zero pose, before the flexion sign is known: rotation about the
+    hinge axis if there is one, else the pitch change."""
+    hinge = hinge if hinge is not None else profile.hinge
+    if hinge is not None:
+        g0 = gravity_in_sensor(profile.roll0, profile.pitch0)
+        return np.array([hinge_angle(f.grav, g0, hinge) for f in frames])
     d = wrap180(_arr(frames, "pitch") - profile.pitch0)
     if forearm:
         d = d - wrap180(_arr(frames, "fa_pitch") - profile.fa_pitch0)
@@ -219,24 +229,38 @@ class CalibrationManager:
         forearm = self.cfg["imu"]["forearm_imu"]
         t = _arr(frames, "t")
         hold = t >= t[-1] - cal["top_hold_s"]
-        d = _theta_raw(frames, profile, forearm)
+        # The joint axis is whatever the gyro turned about during the curl, so the angle does
+        # not depend on how the sensor is strapped on (a bicep curl turns it about X, a wrist
+        # curl about Y). Forearm-IMU setups keep the pitch difference.
+        hinge = None if forearm else principal_axis([f.gyro for f in frames])
+        if hinge is not None:
+            g0 = gravity_in_sensor(profile.roll0, profile.pitch0)
+            if np.linalg.norm(g0 - np.dot(g0, hinge) * hinge) < 0.3:
+                hinge = None                # joint axis nearly vertical: gravity cannot see it
+        d = _theta_raw(frames, profile, forearm, hinge)
         d_hold = float(np.mean(d[hold]))
-        flex_sign = 1 if d_hold >= 0 else -1
         rom = abs(d_hold) + profile.start_angle
-        # The gyro hinge sign comes from how pitch and gyro move together during the curl.
-        axis = GYRO_AXES[self.cfg["imu"]["hinge_axis"]]
-        g = _gyro(frames, axis)
-        dp = np.gradient(_arr(frames, "pitch"), t)
-        moving = np.abs(dp) > 5
-        omega_sign = profile.omega_sign
-        if moving.sum() > 5:
-            corr = float(np.sum(dp[moving] * g[moving]))
-            if corr != 0:
-                omega_sign = flex_sign * (1 if corr > 0 else -1)
+        if hinge is not None:
+            if d_hold < 0:
+                hinge = -hinge              # flexion is positive about the stored axis
+            flex_sign, omega_sign = 1, 1
+        else:
+            flex_sign = 1 if d_hold >= 0 else -1
+            # The gyro hinge sign comes from how pitch and gyro move together during the curl.
+            axis = GYRO_AXES[self.cfg["imu"]["hinge_axis"]]
+            g = _gyro(frames, axis)
+            dp = np.gradient(_arr(frames, "pitch"), t)
+            moving = np.abs(dp) > 5
+            omega_sign = profile.omega_sign
+            if moving.sum() > 5:
+                corr = float(np.sum(dp[moving] * g[moving]))
+                if corr != 0:
+                    omega_sign = flex_sign * (1 if corr > 0 else -1)
         still, sd, gm = _still([f for f, h in zip(frames, hold) if h], cal)
         target = min(self.cfg["exercise"]["target_deg"], cal["rom_fraction"] * rom)
         vals = {"flex_sign": flex_sign, "omega_sign": omega_sign, "rom_deg": round(rom, 1),
-                "target_deg": round(target, 1), "theta_sd": round(sd, 2)}
+                "target_deg": round(target, 1), "theta_sd": round(sd, 2),
+                "hinge": None if hinge is None else [round(float(v), 4) for v in hinge]}
         gs = fit_gravity_signs(frames, zero_vals)
         vals["gravity_signs"] = gs
         if rom < cal["min_rom_deg"]:
@@ -331,6 +355,7 @@ def apply_result(profile: Profile, res: StepResult):
         profile.last_quick_calibration = datetime.now().isoformat(timespec="seconds")
     elif res.step == "top":
         profile.flex_sign, profile.omega_sign = v["flex_sign"], v["omega_sign"]
+        profile.hinge = v.get("hinge")
         profile.rom_deg, profile.target_deg = v["rom_deg"], v["target_deg"]
         profile.gravity_signs = v["gravity_signs"]
         if "rvc" in v:           # muscle-driven exercise: the reference comes from this step

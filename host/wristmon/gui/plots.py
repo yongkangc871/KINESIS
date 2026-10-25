@@ -209,3 +209,66 @@ class TrendChart(pg.PlotWidget):
     def set_points(self, pts):
         pts = [p for p in pts if p[1] == p[1]]
         self.curve.setData([p[0] for p in pts], [p[1] for p in pts])
+
+
+class SessionChart(QWidget):
+    """Whole session on one time axis: angle (IMU) above muscle activation (sEMG envelope,
+    %RVC), with every rep shaded (green = counted, red = not counted, labelled)."""
+
+    MAX_POINTS = 4000           # decimated for drawing; the report keeps its own copy
+
+    def __init__(self, cfg: dict, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        self.angle = pg.PlotWidget()
+        self.emg = pg.PlotWidget()
+        style_plot(self.angle, "Angle (°)")
+        style_plot(self.emg, "Muscle %", "time (s)")
+        self.emg.setXLink(self.angle)
+        self.angle.getAxis("bottom").setStyle(showValues=False)
+        lay.addWidget(self.angle, 1)
+        lay.addWidget(self.emg, 1)
+        self.c_angle = fast_curve(self.angle, pen=pg.mkPen(T.ACCENT, width=1.5))
+        self.c_emg = fast_curve(self.emg, pen=pg.mkPen(EMG_COLOR, width=1.2))
+        dash = pg.QtCore.Qt.PenStyle.DashLine
+        self.target_line = pg.InfiniteLine(45, angle=0, pen=pg.mkPen(T.qcolor(T.TARGET, 170), width=1, style=dash))
+        self.angle.addItem(self.target_line)
+        self.emg.addItem(pg.InfiniteLine(cfg["faults"]["min_activation_pct"], angle=0,
+                                         pen=pg.mkPen(T.qcolor(T.TEXT, 120), width=1, style=dash)))
+        self.spans: list = []
+
+    def set_session(self, trace: list, reps: list, target: float):
+        """trace: [(t, theta, env_pct)] on device time; reps: RepRecords (practice ignored)."""
+        for plot, item in self.spans:
+            plot.removeItem(item)
+        self.spans = []
+        self.target_line.setValue(target)
+        if not trace:
+            self.c_angle.setData([], [])
+            self.c_emg.setData([], [])
+            return
+        a = np.asarray(trace, float)
+        step = max(1, len(a) // self.MAX_POINTS)
+        t0 = a[0, 0]
+        d = a[::step]
+        self.c_angle.setData(d[:, 0] - t0, np.nan_to_num(d[:, 1]))
+        self.c_emg.setData(d[:, 0] - t0, np.nan_to_num(d[:, 2]))
+        for r in reps:
+            if r.practice or not (r.t_start == r.t_start and r.t_end == r.t_end):
+                continue
+            col = T.GOOD if r.valid else T.BAD
+            for plot in (self.angle, self.emg):
+                reg = pg.LinearRegionItem((r.t_start - t0, r.t_end - t0), movable=False,
+                                          brush=T.qcolor(col, 40), pen=pg.mkPen(None))
+                plot.addItem(reg)
+                self.spans.append((plot, reg))
+            txt = text_item(str(r.index), col, anchor=(0.5, 1))
+            txt.setPos((r.t_start + r.t_end) / 2 - t0, max(target, r.peak_theta if r.peak_theta == r.peak_theta else 0) + 8)
+            self.angle.addItem(txt)
+            self.spans.append((self.angle, txt))
+        hi = float(np.nanmax(d[:, 1])) if np.isfinite(d[:, 1]).any() else target
+        self.angle.setYRange(min(-10.0, float(np.nanmin(d[:, 1]))), max(target, hi) + 20, padding=0)
+        self.emg.setYRange(0, max(120.0, float(np.nanpercentile(d[:, 2], 99)) if np.isfinite(d[:, 2]).any() else 120), padding=0)
+        self.angle.setXRange(0, d[-1, 0] - t0, padding=0.01)

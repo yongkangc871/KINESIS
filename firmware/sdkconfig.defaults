@@ -1,9 +1,6 @@
 # Board: ESP32-WROOM-32 (classic ESP32, 4 MB flash, no PSRAM).
 CONFIG_IDF_TARGET="esp32"
 
-# The OLED uses the legacy I2C driver API (works on IDF 5.1+); hide its deprecation notice.
-CONFIG_I2C_SUPPRESS_DEPRECATE_WARN=y
-
 # UART0 (USB bridge) carries the binary stream only, so silence the console and logs.
 CONFIG_ESP_CONSOLE_NONE=y
 CONFIG_LOG_DEFAULT_LEVEL_NONE=y
@@ -11,6 +8,9 @@ CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
 
 # The Wi-Fi stack makes the app larger than the default 1 MB partition.
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Buzzer stays silent unless the PC app commands a beep (no standalone sEMG test beep when idle).
+CONFIG_WM_EMG_BEEP_THRESHOLD=0
 
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y

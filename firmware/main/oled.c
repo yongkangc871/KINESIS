@@ -1,11 +1,12 @@
 #include <string.h>
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "oled.h"
 
-#define OLED_I2C_PORT I2C_NUM_0
-#define I2C_TIMEOUT pdMS_TO_TICKS(50)
+#define OLED_I2C_PORT I2C_NUM_0     // the BNO055 has I2C_NUM_1 on its own pins
+#define I2C_TIMEOUT_MS 50
 
-static uint8_t s_addr;
+static i2c_master_bus_handle_t s_bus;
+static i2c_master_dev_handle_t s_dev;
 // Byte 0 is the I2C "data" control byte, so the whole frame goes out in one transfer.
 static uint8_t s_frame[1 + OLED_W * OLED_H / 8];
 static uint8_t *const s_fb = &s_frame[1];
@@ -43,49 +44,66 @@ static bool send_cmds(const uint8_t *cmds, size_t n)
     uint8_t buf[32];
     buf[0] = 0x00;   // control byte: command stream
     memcpy(&buf[1], cmds, n);
-    return i2c_master_write_to_device(OLED_I2C_PORT, s_addr, buf, n + 1, I2C_TIMEOUT) == ESP_OK;
+    return i2c_master_transmit(s_dev, buf, n + 1, I2C_TIMEOUT_MS) == ESP_OK;
 }
+
+static const uint8_t INIT[] = {
+    0xAE,             // display off
+    0xD5, 0x80,       // clock divide
+    0xA8, 0x3F,       // multiplex 64
+    0xD3, 0x00,       // display offset
+    0x40,             // start line 0
+    0x8D, 0x14,       // charge pump on
+    0x20, 0x00,       // horizontal addressing
+    0xA1,             // segment remap (column 127 = SEG0)
+    0xC8,             // COM scan descending
+    0xDA, 0x12,       // COM pins for 128x64
+    0x81, 0xCF,       // contrast
+    0xD9, 0xF1,       // pre-charge
+    0xDB, 0x40,       // VCOMH
+    0xA4,             // display follows RAM
+    0xA6,             // normal (not inverted)
+    0x2E,             // no scrolling
+    0xAF,             // display on
+};
 
 bool oled_init(int sda_gpio, int scl_gpio, uint8_t addr)
 {
-    s_addr = addr;
-    const i2c_config_t cfg = {
-        .mode = I2C_MODE_MASTER,
+    const i2c_master_bus_config_t bus = {
+        .i2c_port = OLED_I2C_PORT,
         .sda_io_num = sda_gpio,
         .scl_io_num = scl_gpio,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,   // modules usually have pull-ups too
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 400000,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,   // modules usually have pull-ups too
     };
-    if (i2c_param_config(OLED_I2C_PORT, &cfg) != ESP_OK) return false;
-    if (i2c_driver_install(OLED_I2C_PORT, I2C_MODE_MASTER, 0, 0, 0) != ESP_OK) return false;
+    if (i2c_new_master_bus(&bus, &s_bus) != ESP_OK) return false;
+    const i2c_device_config_t dev = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = addr,
+        .scl_speed_hz = 400000,
+    };
+    if (i2c_master_bus_add_device(s_bus, &dev, &s_dev) != ESP_OK) {
+        i2c_del_master_bus(s_bus);
+        return false;
+    }
 
-    static const uint8_t init[] = {
-        0xAE,             // display off
-        0xD5, 0x80,       // clock divide
-        0xA8, 0x3F,       // multiplex 64
-        0xD3, 0x00,       // display offset
-        0x40,             // start line 0
-        0x8D, 0x14,       // charge pump on
-        0x20, 0x00,       // horizontal addressing
-        0xA1,             // segment remap (column 127 = SEG0)
-        0xC8,             // COM scan descending
-        0xDA, 0x12,       // COM pins for 128x64
-        0x81, 0xCF,       // contrast
-        0xD9, 0xF1,       // pre-charge
-        0xDB, 0x40,       // VCOMH
-        0xA4,             // display follows RAM
-        0xA6,             // normal (not inverted)
-        0x2E,             // no scrolling
-        0xAF,             // display on
-    };
-    if (!send_cmds(init, sizeof(init))) {
-        i2c_driver_delete(OLED_I2C_PORT);
+    if (!send_cmds(INIT, sizeof(INIT))) {
+        i2c_master_bus_rm_device(s_dev);
+        i2c_del_master_bus(s_bus);
         return false;
     }
     s_frame[0] = 0x40;   // control byte: data stream
     oled_clear();
     return oled_flush();
+}
+
+bool oled_refresh_config(void)
+{
+    // Skip the leading "display off" so a healthy panel does not flicker.
+    if (send_cmds(&INIT[1], sizeof(INIT) - 1)) return true;
+    i2c_master_bus_reset(s_bus);   // clocks out a slave left holding SDA low
+    return false;
 }
 
 void oled_clear(void) { memset(s_fb, 0, OLED_W * OLED_H / 8); }
@@ -122,5 +140,5 @@ bool oled_flush(void)
 {
     static const uint8_t window[] = {0x21, 0x00, 0x7F, 0x22, 0x00, 0x07};   // all columns, all pages
     if (!send_cmds(window, sizeof(window))) return false;
-    return i2c_master_write_to_device(OLED_I2C_PORT, s_addr, s_frame, sizeof(s_frame), I2C_TIMEOUT) == ESP_OK;
+    return i2c_master_transmit(s_dev, s_frame, sizeof(s_frame), I2C_TIMEOUT_MS) == ESP_OK;
 }

@@ -14,7 +14,7 @@ void sensor_state_set_battery_mv(uint16_t mv) { s_battery_mv = mv; }
 
 uint16_t sensor_state_get_battery_mv(void) { return s_battery_mv; }
 
-void sensor_state_set_imu(uint8_t imu_id, const int16_t angle[3], const int16_t gyro[3])
+void sensor_state_set_imu(uint8_t imu_id, const int16_t angle[3], const int16_t gyro[3], uint8_t calib)
 {
     if (imu_id >= MAX_IMUS) return;
     int64_t now = esp_timer_get_time();
@@ -23,6 +23,7 @@ void sensor_state_set_imu(uint8_t imu_id, const int16_t angle[3], const int16_t 
     s_imu[imu_id].t_us = now;
     memcpy(s_imu[imu_id].angle, angle, sizeof(s_imu[imu_id].angle));
     memcpy(s_imu[imu_id].gyro, gyro, sizeof(s_imu[imu_id].gyro));
+    s_imu[imu_id].calib = calib;
     portEXIT_CRITICAL(&s_lock);
 }
 

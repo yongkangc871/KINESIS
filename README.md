@@ -5,7 +5,7 @@ Real-time monitor for the seated wrist curl. It counts a rep only when the wrist
 > **Exercise guidance only, not a diagnosis.** The app shows this disclaimer on its first screen.
 
 ```
-firmware/   ESP32-WROOM-32 firmware (ESP-IDF >= 5.1): JY901S + sEMG ADC + buzzer + OLED -> Wi-Fi (or USB)
+firmware/   ESP32-WROOM-32 firmware (ESP-IDF >= 5.3): BNO055 + sEMG ADC + buzzer + OLED -> Wi-Fi (or USB)
 host/       Python pipeline, PyQt6 GUI, config.yaml, simulator, replay and training tools
 tests/      pytest suite: filters, MDF, every fault code, replay determinism, latency, GUI FPS
 ```
@@ -32,43 +32,42 @@ Board: **ESP32-WROOM-32** (classic ESP32, 4 MB flash, no PSRAM), on a DevKit wit
 | ESP32 pin | Direction | Connects to | Function | Kconfig option |
 |---|---|---|---|---|
 | GPIO34 (ADC1_CH6) | In (analog) | sEMG module SIG/OUT | sEMG sampling, 1 kHz | `WM_EMG_ADC_CHANNEL` = 6 |
-| GPIO16 (UART2 RX) | In | Hand JY901S **TX** | IMU data, 115200 baud | `WM_IMU_UART_RX` |
-| GPIO17 (UART2 TX) | Out | Hand JY901S **RX** | IMU configuration | `WM_IMU_UART_TX` |
-| GPIO32 (UART1 RX) | In | Forearm JY901S **TX** (optional) | 2nd IMU data | `WM_IMU2_UART_RX` |
-| GPIO33 (UART1 TX) | Out | Forearm JY901S **RX** (optional) | 2nd IMU configuration | `WM_IMU2_UART_TX` |
-| GPIO25 | Out | FC-07 buzzer module **I/O** | Beeps, **active-low** (low = beep) | `WM_BUZZER_GPIO`, `WM_BUZZER_ACTIVE_HIGH = n` |
+| GPIO26 (I2C1 SDA) | In/Out | BNO055 **SDA** (hand, and forearm if fitted) | IMU data, 100 kHz, 50 Hz samples | `WM_IMU_SDA` |
+| GPIO27 (I2C1 SCL) | Out | BNO055 **SCL** | IMU clock | `WM_IMU_SCL` |
+| GPIO25 | Out | Passive buzzer **+** (or S/I/O on a module) | Beeps: a 2.5 kHz PWM tone | `WM_BUZZER_GPIO`, `WM_BUZZER_PASSIVE = y` |
 | GPIO21 (I2C SDA) | In/Out | OLED **SDA** | Status display, 400 kHz | `WM_OLED_SDA` |
 | GPIO22 (I2C SCL) | Out | OLED **SCL** | Status display clock | `WM_OLED_SCL` |
 | GPIO35 (ADC1_CH7) | In (analog) | 9 V battery divider midpoint (220k/100k) | Battery voltage | `WM_BATTERY_ADC_CHANNEL` = 7, `WM_BATTERY_DIVIDER_X100` = 320 |
 | GPIO1 / GPIO3 (UART0) | - | On-board USB-UART bridge | Flashing the firmware; data link only if USB is chosen instead of Wi-Fi | `WM_LINK`, `WM_HOST_BAUD` |
 | (antenna) | - | Built-in Wi-Fi | Data link to the PC (default): TCP 3333, beacon UDP 3334 | `WM_LINK`, `WM_WIFI_*` |
-| 3V3 | Power **in** | Buck converter OUT+ (3.3 V from the 9 V battery), and from there JY901S, FC-07, OLED and sEMG VCC | Main 3.3 V rail for everything | - |
+| 3V3 | Power **in** | Buck converter OUT+ (3.3 V from the 9 V battery), and from there BNO055, buzzer, OLED and sEMG VCC | Main 3.3 V rail for everything | - |
 | 5V / VIN | - | Not used on battery (it only carries 5 V while USB is plugged in) | - | - |
 | GND | - | Every module's GND | Common ground | - |
 
-Do **not** use GPIO6–11 (the WROOM-32's internal flash) or the strapping pins GPIO0, 2, 12 and 15 for the peripherals. GPIO34 and GPIO35 are input-only, which is fine for the ADC. GPIO16/17 are free on the WROOM-32. They are **not** free on a WROVER module (PSRAM uses them); if you ever switch to a WROVER, move the IMU UART in menuconfig.
+Do **not** use GPIO6–11 (the WROOM-32's internal flash) or the strapping pins GPIO0, 2, 12 and 15 for the peripherals. GPIO34 and GPIO35 are input-only, which is fine for the ADC. GPIO26/27 are free on both the WROOM-32 and WROVER modules. The OLED (GPIO21/22, I2C0) and the BNO055 (GPIO26/27, I2C1) are on separate buses, so a slow BNO055 transfer never delays the display.
 
 ### Per-device wiring
 
-**WitMotion JY901S, hand IMU (back of the hand)**
+**Bosch BNO055 breakout, hand IMU (back of the hand), I2C address 0x29**
 
-| JY901S pin | → | ESP32 | Note |
+| BNO055 pin | → | ESP32 | Note |
 |---|---|---|---|
-| VCC | → | 3V3 rail | The module accepts 3.3–5 V; its UART is 3.3 V logic |
+| VIN / VCC | → | 3V3 rail | Breakouts accept 3.3–5 V |
 | GND | → | GND | |
-| TX | → | GPIO16 | TX goes to RX (crossed) |
-| RX | → | GPIO17 | RX goes to TX (crossed) |
-| SDA / SCL | - | not connected | I2C not used |
+| SDA | → | GPIO26 | |
+| SCL | → | GPIO27 | |
+| ADR / ADD | → | 3V3 | **High = 0x29** (the firmware default `WM_IMU_ADDR`). Left open or low it is 0x28 |
+| PS0 / PS1 | → | GND / open | I2C mode (the breakout default). Do not set them for UART |
+| RST / INT | - | not connected | |
 
-**WitMotion JY901S, forearm IMU (optional, needs `WM_IMU2_ENABLE` and `imu.forearm_imu: true`)**
+* The firmware runs the chip in **IMU fusion mode** (accelerometer + gyro, no magnetometer), so an iron dumbbell does not make the heading jump. `WM_IMU_FUSION_NDOF` adds the magnetometer.
+* It reads orientation (quaternion), gyro and acceleration every 20 ms (`WM_IMU_PERIOD_MS`), converts them to the same units the protocol used before, and sends them to the PC. `imu.rate_hz` in `config.yaml` must match (50 Hz).
+* The BNO055 calibrates itself while it runs. Move the hand slowly through a few positions after power-on until the OLED shows G3 (gyro) and A3 (accelerometer).
+* The BNO055 stretches the I2C clock; 100 kHz (`WM_IMU_I2C_HZ`) is the most reliable speed. Most breakouts have their own pull-ups.
 
-| JY901S pin | → | ESP32 | Note |
-|---|---|---|---|
-| VCC | → | 3V3 rail | |
-| GND | → | GND | |
-| TX | → | GPIO32 | |
-| RX | → | GPIO33 | |
-| SDA / SCL | - | not connected | |
+**Second BNO055 on the forearm (optional, needs `WM_IMU2_ENABLE` and `imu.forearm_imu: true`)**
+
+Wire it to the **same** SDA/SCL/3V3/GND, with **ADR to GND (0x28)** so the two addresses differ (`WM_IMU2_ADDR`).
 
 **Schiray dry-electrode sEMG module (1 channel)**
 
@@ -80,17 +79,18 @@ Do **not** use GPIO6–11 (the WROOM-32's internal flash) or the strapping pins 
 | Electrode + / − | → | Anterior forearm, about 1/3 of the way from elbow to wrist | Over flexor carpi radialis / flexor digitorum superficialis, in line with the muscle |
 | Reference electrode | → | Elbow bone | Bony site, away from the muscle |
 
-**FC-07 Active Buzzer Module (3.3–5 V, low-level trigger)**
+**Passive buzzer (`WM_BUZZER_PASSIVE = y`, the default)**
 
-| FC-07 pin | → | ESP32 | Note |
+| Buzzer pin | → | ESP32 | Note |
 |---|---|---|---|
-| VCC | → | **3V3** | Use 3.3 V, not 5 V (see below) |
-| GND | → | GND | |
-| I/O | → | GPIO25 | Low = beep, high = silent. No external transistor or resistor needed; the module has its own |
+| + (or S / I/O on a module) | → | GPIO25 | The firmware drives a 2.5 kHz square wave (`WM_BUZZER_FREQ_HZ`) |
+| − (or GND) | → | GND | |
+| VCC (modules only) | → | 3V3 | |
 
-* The firmware default is `WM_BUZZER_ACTIVE_HIGH = n` (active-low) to match this module. At start-up it drives GPIO25 high (silent).
-* **Power the FC-07 from 3V3.** Its on-board PNP transistor switches off only when I/O reaches VCC. If VCC is 5 V, the ESP32's 3.3 V "high" may not fully turn it off, and the buzzer can whine or stay on.
-* You may hear a short chirp at power-on, before the firmware sets GPIO25 high. If that bothers you, add a 10 kΩ pull-up from GPIO25 to 3V3.
+* A passive buzzer only clicks on DC, so it needs the tone. Try 2000–4000 Hz in menuconfig to find its loudest pitch.
+* `WM_BUZZER_ACTIVE_HIGH = y` (the default with a passive buzzer) keeps the pin low while silent. For a low-level-trigger module, set it to `n`; the pin then idles high.
+* **Active buzzer instead** (beeps by itself on DC, for example the FC-07): set `WM_BUZZER_PASSIVE = n`. For the FC-07 also set `WM_BUZZER_ACTIVE_HIGH = n` (low = beep) and power it from 3V3.
+* **Standalone electrode test (off by default):** `sdkconfig.defaults` sets `WM_EMG_BEEP_THRESHOLD = 0`, so the buzzer is silent while idle. Set it to e.g. 150 and, while the PC app is not streaming, the ESP32 beeps once each time the EMG RMS rises above it. The threshold is the tick mark on the OLED bar. During a session only the app controls the buzzer.
 
 **0.96" OLED display module, 128×64, I2C (SSD1306)**
 
@@ -106,21 +106,21 @@ Do **not** use GPIO6–11 (the WROOM-32's internal flash) or the strapping pins 
 * The firmware expects an **SSD1306** controller, which almost all 0.96" boards use. A 1.3" board is usually an SH1106 and needs a different driver.
 * If no display is connected, the firmware simply runs without it.
 
-What the OLED shows (refreshed 5 times per second; these are raw sensor values, not the host's calibrated wrist angle):
+What the OLED shows (refreshed 10 times per second; these are raw sensor values, not the host's calibrated wrist angle):
 
 ```
 BAT 9.1V      PC:ON      <- battery; PC:ON once the app is connected and streaming
-Roll    177.0            <- JY901S Euler angles, degrees
-Pitch    -3.2               (forearm IMU pitch appears as "F" on the Yaw row)
-Yaw      40.1
+Roll    177.0  S0G3      <- BNO055 angles, degrees; S/G/A/M = calibration (0-3) of
+Pitch    -3.2  A3M0         system, gyro, accelerometer, magnetometer (M stays 0 in IMU mode)
+Yaw      40.1               (forearm IMU pitch appears as "F" on the Yaw row)
 Gyr    1  -30    0       <- gyro x y z, deg/s
 EMG raw 2048             <- last ADC sample, 0-4095
 EMG rms  123             <- AC RMS over ~100 ms, ADC counts
-[########          ]     <- bar: RMS / WM_OLED_EMG_FULL_SCALE (default 400)
+[########   |      ]    <- bar: RMS / WM_OLED_EMG_FULL_SCALE (default 400); | = beep threshold
                             (shows "IP 192.168.4.1" instead until the PC app connects over Wi-Fi)
 ```
 
-"IMU: no data" means no JY901S sample has arrived for 200 ms; check the TX/RX crossover and the baud rate. Use the display while placing the electrodes: the EMG RMS should be small and steady with the hand relaxed, and should jump clearly when the wrist flexes against the weight.
+"IMU: no data / check BNO055 wiring" means no BNO055 sample has arrived for 200 ms; check SDA/SCL (GPIO26/27), 3V3, and that ADR is high (address 0x29). Use the display while placing the electrodes: the EMG RMS should be small and steady with the hand relaxed, and should jump clearly when the wrist flexes against the weight.
 
 **Power: 9 V battery → buck converter (3.3 V) → ESP32 3V3 pin**
 
@@ -130,14 +130,14 @@ EMG rms  123             <- AC RMS over ~100 ms, ADC counts
 | Switch | → | 1N5819 Schottky diode (anode → cathode) | Optional reverse-polarity protection (9 V snaps are easy to touch on backwards); costs about 0.3 V on the 9 V side, which is harmless |
 | Diode cathode (or switch) | → | Buck converter **IN+** | |
 | 9 V battery (−) | → | Buck converter **IN−** | |
-| Buck **OUT+ (3.3 V)** | → | ESP32 **3V3** pin, plus VCC of the JY901S, OLED, FC-07 and sEMG module | Feeds the ESP32 chip directly, bypassing the DevKit's own regulator |
+| Buck **OUT+ (3.3 V)** | → | ESP32 **3V3** pin, plus VCC of the BNO055, OLED, buzzer and sEMG module | Feeds the ESP32 chip directly, bypassing the DevKit's own regulator |
 | Buck **OUT−** | → | ESP32 **GND** | This is the common ground for everything |
 | 10 µF + 100 nF capacitors | across Buck OUT+ / OUT−, close to the ESP32 | Smooths switching ripple, which otherwise shows up as noise on the EMG ADC |
 
 * **Set the buck output to 3.3 V with a multimeter *before* connecting anything.** The 3V3 pin goes straight to the ESP32 chip with no regulator in between. The ESP32 tolerates 3.0–3.6 V; above 3.6 V it can be destroyed. Adjustable modules (LM2596, MP1584, and similar) often ship set to 5 V or more. A fixed 3.3 V module needs no adjustment.
 * **Wi-Fi draws current in short bursts of 300–500 mA.** Use a buck rated for at least **800 mA**, and add a **470 µF electrolytic capacitor** across 3V3/GND close to the ESP32 (in addition to the 10 µF + 100 nF). An undersized converter, or a weak 9 V battery, causes random resets ("brown-out"), typically just as the PC connects.
 * **Never** connect the 9 V to the 3V3 pin. Do not use the 5V/VIN pin in this setup.
-* **Everything runs from the one 3.3 V rail.** The JY901S, OLED and FC-07 are all rated 3.3–5 V. **Check that the Schiray sEMG module runs on 3.3 V.** If it needs 5 V or more, give it its own supply (a second buck, or the battery side if its datasheet allows), keeping its output signal within 0–3.3 V at GPIO34.
+* **Everything runs from the one 3.3 V rail.** The BNO055 breakout, OLED and buzzer all run on 3.3 V. **Check that the Schiray sEMG module runs on 3.3 V.** If it needs 5 V or more, give it its own supply (a second buck, or the battery side if its datasheet allows), keeping its output signal within 0–3.3 V at GPIO34.
 * **With Wi-Fi, no cable to the PC is needed during sessions.** The device runs purely on the 9 V battery, so the patient has no electrical connection to the PC or the mains. That is safer, and it also removes mains hum picked up through the PC's ground. Plug USB in only to flash firmware. If you do plug it in while the buck is powering the board, the DevKit's own regulator also drives the 3V3 rail; two 3.3 V supplies in parallel normally works.
 
 **Battery sense (enabled by default; read on the OLED and in the app's status bar)**
@@ -157,10 +157,10 @@ EMG rms  123             <- AC RMS over ~100 ms, ADC counts
 | Load | Current |
 |---|---|
 | ESP32 with Wi-Fi on (power saving off for low latency) | about 110–130 mA average, 300–500 mA peaks |
-| JY901S | about 25 mA |
+| BNO055 (fusion running) | about 12 mA |
 | OLED (text screen) | about 15–20 mA |
 | sEMG module | about 10–30 mA (check the datasheet) |
-| FC-07 buzzer | about 30 mA, only while beeping |
+| Buzzer | about 30 mA, only while beeping |
 | **Total at 3.3 V** | **about 170–210 mA**, which is about 85 mA from the 9 V battery through an 85 %-efficient buck |
 
 * A 9 V alkaline battery lasts roughly **3–4 hours** with Wi-Fi on. Alkaline 9 V cells also sag under the Wi-Fi current bursts, so a fresh battery matters.
@@ -202,11 +202,11 @@ EMG rms  123             <- AC RMS over ~100 ms, ADC counts
 
                    ESP32-WROOM-32 DevKit
                    +--------------------+
-  JY901S (hand) TX-|GPIO16          3V3 |<- buck 3.3 V; also VCC of JY901S(s), FC-07, OLED, sEMG
-  JY901S (hand) RX-|GPIO17       5V/VIN |   (not used on battery)
- JY901S (fore) TX -|GPIO32          GND |-- buck OUT-, battery -, all module grounds
- JY901S (fore) RX -|GPIO33              |
-    sEMG SIG/OUT --|GPIO34       GPIO25 |-- FC-07 I/O (low = beep)
+     BNO055 SDA ---|GPIO26          3V3 |<- buck 3.3 V; also VCC of BNO055(s), buzzer, OLED, sEMG
+     BNO055 SCL ---|GPIO27       5V/VIN |   (not used on battery)
+ (hand ADR=3V3 -> 0x29,             GND |-- buck OUT-, battery -, all module grounds
+  forearm ADR=GND -> 0x28)              |
+    sEMG SIG/OUT --|GPIO34       GPIO25 |-- passive buzzer + (2.5 kHz tone)
  battery divider --|GPIO35       GPIO21 |-- OLED SDA
                    |             GPIO22 |-- OLED SCL
                    |   Wi-Fi antenna  ))) PC, "WristMonitor" network, TCP 3333 (data)
@@ -214,9 +214,9 @@ EMG rms  123             <- AC RMS over ~100 ms, ADC counts
                    +--------------------+
 ```
 
-* All grounds must be common: ESP32, both IMUs, sEMG module, FC-07 buzzer, OLED and battery.
+* All grounds must be common: ESP32, both IMUs, sEMG module, buzzer, OLED and battery.
 * Keep the sEMG leads short, and away from the buzzer wires and the ESP32 antenna.
-* On boot the firmware configures the JY901S for 200 Hz, acc + gyro + angle output, and 115200 baud. It tries the factory 9600 baud first and saves the result.
+* On boot the firmware waits for the BNO055 (up to 1 s), sets IMU fusion mode, and then reads it every 20 ms. If it stops answering (a loose wire), the firmware resets the bus and sets it up again by itself.
 
 ### Build and flash (ESP-IDF)
 
@@ -245,7 +245,7 @@ Host → device commands are ASCII lines: `START`, `STOP`, `BEEP_OK` (1 × 80 ms
 ## 2. Electrode and IMU placement
 
 * **sEMG (one channel):** two dry pads on the anterior forearm, about **1/3 of the way from elbow to wrist**, over flexor carpi radialis / flexor digitorum superficialis, along the muscle. **Reference pad on the elbow bone.** Clean the skin and press the dry pads firmly. The wizard shows a diagram.
-* **IMU:** JY901S on the **back of the hand**, **X axis along the hand toward the fingers**. With the palm up, pitch is wrist flexion, roll is pronation/supination and yaw is radial/ulnar deviation. The sign of flexion and of the hinge gyro axis is detected during calibration, so mounting the box upside down still works.
+* **IMU:** BNO055 on the **back of the hand**, **X axis along the hand toward the fingers**. With the palm up, pitch is wrist flexion, roll is pronation/supination and yaw is radial/ulnar deviation. The sign of flexion and of the hinge gyro axis is detected during calibration, so mounting the box upside down still works.
 * **Optional forearm IMU:** mount it with the same axis orientation as the hand IMU and set `imu.forearm_imu: true`. Then θ = hand − forearm, and forearm lift is measured directly (> 10°).
 
 ## 3. Calibration (GUI wizard)
@@ -320,13 +320,13 @@ Tune one threshold at a time in `host/config.yaml` (all thresholds live there; p
 * **Single-IMU forearm-lift inference.** Without a forearm IMU, forearm/elbow lift is inferred from off-plane gyro and from acceleration not explained by gravity plus wrist rotation. A slow, pure forearm tilt about an axis parallel to the wrist can pass as wrist flexion; NO_MUSCLE then usually catches it, but not always. Fit the second IMU for certainty.
 * **Envelope-only mode** cannot measure spectral fatigue (MDF/FInsm5); its score relies on amplitude and movement changes.
 * **With the weight held at neutral, the flexors are already active** before each lift, so the onset-lag check mostly matters for lifts that start from a supported/relaxed hand. The %RVC check catches passive lifts.
-* JY901S yaw drifts without a good magnetometer fix, so SIDE_BEND is measured from the start of each rep (`faults.yaw_reference`).
+* BNO055 yaw drifts slowly in IMU fusion mode (no magnetometer), so SIDE_BEND is measured from the start of each rep (`faults.yaw_reference`).
 * The defaults are engineering starting points, not clinically validated. Tune them with a therapist using recorded sessions.
 
 ## 9. Defaults chosen where the spec was open (all configurable)
 
-* Pins above; 1 kHz EMG in 10-sample packets; IMU 200 Hz; a 2nd IMU on UART1.
-* The **active buzzer has a fixed loudness**, so the volume slider controls the matching PC sound; `feedback.buzzer` turns the buzzer on or off. TTS is optional (`feedback.tts`, needs `pyttsx3`).
+* Pins above; 1 kHz EMG in 10-sample packets; IMU 50 Hz (BNO055, `WM_IMU_PERIOD_MS = 20`; 10 ms gives 100 Hz, the chip's fusion maximum); a 2nd BNO055 at 0x28 on the same bus.
+* The **buzzer has a fixed loudness**, so the volume slider controls the matching PC sound; `feedback.buzzer` turns the buzzer on or off. TTS is optional (`feedback.tts`, needs `pyttsx3`).
 * Top hold = the longest still period (smoothed |ω| < 3°/s) within 3° of the peak. A slow touch-and-go reversal is not a pause.
 * EARLY_DOWN is also logged whenever the target is missed (spec), but INCOMPLETE_ROM is shown first.
 * Priority puts posture and structure (NOT_RETURNED, TIMEOUT) ahead of tempo and smoothness faults.

@@ -67,7 +67,8 @@ def build(argv=None):
         profile = Profile.load(cal) if cal.exists() else Profile(user="replay")
     elif args.sim:
         mode = "sim"
-        source = SimSource(emg_mode=args.emg_mode, realtime=True, forearm_imu=cfg["imu"]["forearm_imu"])
+        source = SimSource(emg_mode=args.emg_mode, realtime=True, forearm_imu=cfg["imu"]["forearm_imu"],
+                           imu_fs=cfg["imu"]["rate_hz"])
     else:
         mode = "live"
         source = make_live_source(cfg, args.port, args.wifi)

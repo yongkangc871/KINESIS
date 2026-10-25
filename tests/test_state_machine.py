@@ -190,7 +190,7 @@ def test_signal_poor_imu_dropout(cfg):
 
 
 def test_timeout(cfg):
-    reps, states = run([(2.0, 48), (16.0, 48), (3.2, 0)], cfg=cfg)
+    reps, states = run([(2.0, 48), (21.0, 48), (3.2, 0)], cfg=cfg)   # past max_rep_s (20 s)
     r = reps[0]
     assert F.TIMEOUT in r.faults and r.message == "Try again"
     assert len(reps) == 1   # the late lowering is not judged as a second rep

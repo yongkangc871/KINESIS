@@ -1,6 +1,7 @@
 #include "sdkconfig.h"
 #if CONFIG_WM_LINK_HAS_WIFI
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -18,6 +19,8 @@
 
 #define TX_BUFFER_BYTES 16384   // ~1.5 s of stream; a longer Wi-Fi stall drops packets instead
 #define RX_LINE_MAX 32
+#define SEND_BATCH_MS 20        // frames gathered per TCP send
+#define SEND_MAX_STALLS 15      // x 200 ms send timeout: drop the PC after 3 s without progress
 
 static StreamBufferHandle_t s_tx;
 static volatile int s_client = -1;
@@ -68,6 +71,9 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL));
     strlcpy((char *)wc.sta.ssid, CONFIG_WM_WIFI_SSID, sizeof(wc.sta.ssid));
     strlcpy((char *)wc.sta.password, CONFIG_WM_WIFI_PASSWORD, sizeof(wc.sta.password));
+    // WPA3 routers set to H2E only reject the older hunting-and-pecking handshake, and the
+    // zeroed config leaves the method unspecified: allow both.
+    wc.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
 #endif
@@ -164,19 +170,29 @@ static void server_task(void *arg)
 // link can never block the sampling tasks that produce the frames.
 static void sender_task(void *arg)
 {
-    static uint8_t buf[1460];
+    static uint8_t buf[1440];
     for (;;) {
         size_t got = xStreamBufferReceive(s_tx, buf, sizeof(buf), portMAX_DELAY);
+        // Collect ~20 ms of frames per send: one tiny segment per frame (~200/s) fills lwIP's
+        // unacked-segment queue on the first Wi-Fi hiccup and stalls the socket.
+        vTaskDelay(pdMS_TO_TICKS(SEND_BATCH_MS));
+        got += xStreamBufferReceive(s_tx, buf + got, sizeof(buf) - got, 0);
         int sock = s_client;
         if (sock < 0) continue;                    // nobody listening: discard
         size_t off = 0;
-        while (off < got) {
+        int stalls = 0;
+        while (off < got && sock == s_client) {
             int sent = send(sock, buf + off, got - off, 0);
-            if (sent <= 0) {
+            if (sent > 0) {
+                off += sent;
+                stalls = 0;
+            } else if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) &&
+                       ++stalls < SEND_MAX_STALLS) {
+                continue;                          // SO_SNDTIMEO expired: Wi-Fi is slow, not gone
+            } else {
                 close_client();
                 break;
             }
-            off += sent;
         }
     }
 }

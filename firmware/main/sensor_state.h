@@ -9,6 +9,7 @@ typedef struct {
     int64_t t_us;
     int16_t angle[3];   // JY901 raw units: deg = raw / 32768 * 180
     int16_t gyro[3];    // dps = raw / 32768 * 2000
+    uint8_t calib;      // BNO055 CALIB_STAT: sys|gyro|acc|mag, 2 bits each (3 = fully calibrated)
 } imu_state_t;
 
 typedef struct {
@@ -18,7 +19,7 @@ typedef struct {
     float rms;          // running AC RMS over ~100 ms, ADC counts
 } emg_state_t;
 
-void sensor_state_set_imu(uint8_t imu_id, const int16_t angle[3], const int16_t gyro[3]);
+void sensor_state_set_imu(uint8_t imu_id, const int16_t angle[3], const int16_t gyro[3], uint8_t calib);
 void sensor_state_set_emg(uint16_t raw, float mean, float rms);
 
 void sensor_state_set_battery_mv(uint16_t mv);
