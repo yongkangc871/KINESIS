@@ -420,6 +420,9 @@ class Pipeline:
             self.logger.log_event(self.now, event, arg if extra is None else f"{arg}:{extra}")
 
     def _emit(self, name: str, payload=None):
+        if name == "session_complete" and self.logger:
+            # The summary reads and publishes the session files: get the buffered tail on disk.
+            self.logger.flush()
         if self.on_event:
             self.on_event(name, payload)
 

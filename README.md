@@ -23,6 +23,49 @@ cd .. && python -m pytest -q tests       # ~3 min (includes end-to-end sessions)
 
 With hardware: connect the PC to the ESP32's Wi-Fi network **WristMonitor** (with the password you set in `firmware/sdkconfig.secrets`), then run `python run_gui.py`. The app finds the ESP32 by itself; `python run_gui.py --wifi 192.168.4.1` sets the address explicitly, and `python run_gui.py --port COM5` uses USB serial instead (see section 1). **Spacebar** (or Esc) is the emergency stop on every screen. F11 toggles full screen.
 
+## Patient app + specialist dashboard (full loop)
+
+This app is the patient-facing side. The specialist side is the
+[kinesis-public-demo](https://github.com/ynlynnk/kinesis-public-demo) dashboard, which reviews
+every session with AI support and sends a plain-language review back. Clone both repositories
+next to each other; they exchange files through `kinesis-public-demo/report/`:
+
+```
+Desktop/KINESIS/
+    KINESIS/                 this repository (patient app)
+    kinesis-public-demo/     specialist dashboard; report/<patient>/se<session>/ is shared
+```
+
+Execution steps (PowerShell, Python 3.11+):
+
+1. **Install** both once:
+   ```powershell
+   cd KINESIS\host;  python -m pip install -r requirements.txt
+   cd ..\..\kinesis-public-demo;  python -m pip install -r requirements-ui.txt
+   ```
+2. **Run a session** in the patient app (`cd KINESIS\host; python run_gui.py --sim --windowed`, or
+   `python run_gui.py` with the sensor). Enter the patient's name, choose arms or legs, and do the
+   routine. **Skip to results (demo)** jumps to the summary at any point.
+3. **The session is sent automatically.** When its summary appears, the app writes the report
+   (`report.html` / `report.json`, with whole-session IMU and sEMG graphs) to
+   `sessions/<name>/<stamp>/` and copies it with the raw recording to
+   `kinesis-public-demo/report/<name>/se<stamp>/` ("Sent to your physiotherapist for review").
+   The target is `publish:` in `host/config.yaml` (`enabled: false` turns it off).
+4. *(Optional)* **Send older sessions** or **make demo data**, from `host/`:
+   ```powershell
+   python publish_sessions.py yk --dry-run   # list what would be sent; drop --dry-run to send
+   python make_demo_history.py               # simulated patient DEMO_sim, 6 sessions over 17 days
+   ```
+5. **Specialist review:** in `kinesis-public-demo`, run `python -m streamlit run app.py` (with
+   a Gemini key: `powershell -ExecutionPolicy Bypass -File .\run_model2_gemini.ps1 -SkipInstall`).
+   Pick the patient and session, read the AI progress report (history, rehab timeframe, trends,
+   risk tag), ask the floating agent, then save a review and **Release to patient**.
+6. **The patient reads the review here:** the next time they enter their name, a "From your
+   physiotherapist" page opens before the exercises; past reviews stay under **Messages from your
+   physiotherapist** on the choice page. Opening one leaves a read receipt the dashboard shows.
+
+The AI output is decision support for the physiotherapist, never a diagnosis.
+
 ## 1. Hardware and wiring
 
 Board: **ESP32-WROOM-32** (classic ESP32, 4 MB flash, no PSRAM), on a DevKit with a CP2102/CH340 USB bridge. All GPIOs are the firmware defaults. Change them in `idf.py menuconfig` → *Wrist Curl Monitor*.
@@ -301,7 +344,7 @@ The mode comes from `emg.mode` (`auto | raw | envelope`), else the firmware's Kc
 
 ## 7. Logging, replay and threshold tuning
 
-Each session writes `sessions/<user>/<stamp>/`: `emg.csv` and `imu.csv` (raw synchronised streams, device clock), `events.csv` (session actions and calibration captures, with device time), `reps.csv`, `calibration.json`, `config.yaml` and `meta.json`.
+Each session writes `sessions/<user>/<stamp>/`: `emg.csv` and `imu.csv` (raw synchronised streams, device clock), `events.csv` (session actions and calibration captures, with device time), `reps.csv`, `calibration.json`, `config.yaml` and `meta.json`, plus `report.html` / `report.json` once its summary is shown (also published to the specialist dashboard, see above).
 
 Replay feeds these files through the same pipeline, and decisions are deterministic. EMG is read 20 ms behind each IMU sample, so results do not depend on packet arrival order. To tune:
 

@@ -135,6 +135,7 @@ def build_summary_json(summary: dict, reps: list, cfg: dict, user: str, exercise
         },
         "reps": [{
             "index": r.index, "set": r.set_no, "counted": r.valid, "faults": r.faults,
+            "t_start": _num(r.t_start, 3), "t_end": _num(r.t_end, 3),   # device clock, as signals.t0
             "tip": None if r.valid else r.message,
             "peak_deg": _num(r.peak_theta, 1), "lift_s": _num(r.lift_s, 2), "hold_s": _num(r.hold_s, 2),
             "lower_s": _num(r.lower_s, 2), "peak_speed_up_dps": _num(r.peak_omega_lift, 0),
@@ -459,7 +460,7 @@ def write_report(path: str | Path, summary: dict, reps: list, cfg: dict, user: s
     if trace:
         t0 = trace[0][0]
         data["signals"] = {     # whole session, decimated: enough to see the shape of every rep
-            "rate_hz": None, "t_s": [], "angle_deg": [], "muscle_pct_rvc": []}
+            "t0": _num(t0, 3), "rate_hz": None, "t_s": [], "angle_deg": [], "muscle_pct_rvc": []}
         d = _decimate(trace, 1200)
         if len(d) > 1:
             data["signals"]["rate_hz"] = _num((len(d) - 1) / max(d[-1][0] - d[0][0], 1e-9), 2)

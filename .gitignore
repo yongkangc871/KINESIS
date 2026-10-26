@@ -9,3 +9,6 @@ host/sessions/
 host/profiles/*.json
 host/models/
 .claude/
+
+# Editor settings with machine-specific paths (ESP-IDF location, COM port)
+.vscode/

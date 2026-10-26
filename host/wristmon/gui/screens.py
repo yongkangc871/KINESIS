@@ -11,7 +11,7 @@ from pathlib import Path
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
-                             QLabel, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+                             QLabel, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import exercises as EX
 from .. import faults as F
@@ -384,6 +384,119 @@ class StartPage(QWidget):
             self.user.setFocus()
 
 
+# ------------------------------------------------------------------ physiotherapist's reviews
+
+REVIEW_LEVELS = {"green": ("check", T.GOOD), "yellow": ("info", T.WARN), "red": ("warning", T.BAD)}
+REVIEW_SECTIONS = (("summary", "How the session went"), ("movement", "Your movement"),
+                   ("effort", "Muscle effort and tiredness"), ("progress", "Your progress"))
+
+
+def _clear(layout):
+    while layout.count():
+        item = layout.takeAt(0)
+        if item.widget() is not None:
+            item.widget().deleteLater()
+        elif item.layout() is not None:
+            _clear(item.layout())
+
+
+class ReviewsPage(QWidget):
+    """The physiotherapist's released reviews (from the specialist dashboard), newest first,
+    one at a time in large plain words. Shown after the name when there is a new one, and
+    from "Messages from your physiotherapist" on the choice page."""
+    done = pyqtSignal()
+    opened = pyqtSignal(int)        # index of the review now on screen (marked as read)
+
+    def __init__(self):
+        super().__init__()
+        self.reviews: list[dict] = []
+        self.i = 0
+        outer = QHBoxLayout(self)
+        outer.addStretch(SIDE)
+        col = QVBoxLayout()
+        col.setSpacing(GAP)
+        outer.addLayout(col, BODY)
+        outer.addStretch(SIDE)
+        col.addSpacing(GAP * 2)
+        head = label("From your physiotherapist", color=T.HEADING, align=LEFT)
+        head.setFont(B.title_font(T.pt(40)))
+        col.addWidget(head)
+        self.meta = label("", T.M, color=T.MUTED, align=LEFT)
+        col.addWidget(self.meta)
+        self.status = IconText(T.L, icon_px=40)
+        col.addWidget(self.status, 0, Qt.AlignmentFlag.AlignLeft)
+        box, self.body = card(margins=(32, 24, 32, 24), spacing=GAP)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        scroll.setWidget(box)
+        col.addWidget(scroll, 1)
+        row = QHBoxLayout()
+        row.setSpacing(GAP)
+        self.older = button("Older message", "secondary", 64)
+        self.older.clicked.connect(lambda: self.show_review(self.i + 1))
+        self.position = label("", T.M, color=T.MUTED)
+        self.newer = button("Newer message", "secondary", 64)
+        self.newer.clicked.connect(lambda: self.show_review(self.i - 1))
+        go = button("Continue", "good", 64)
+        go.setMinimumWidth(T.pt(220))
+        go.clicked.connect(self.done.emit)
+        lift(go, blur=28, dy=8, alpha=70)
+        row.addWidget(self.older)
+        row.addWidget(self.position)
+        row.addWidget(self.newer)
+        row.addStretch(1)
+        row.addWidget(go)
+        col.addLayout(row)
+        col.addSpacing(GAP * 2)
+
+    def set_reviews(self, reviews: list[dict], index: int = 0):
+        self.reviews = reviews
+        self.show_review(index)
+
+    def show_review(self, i: int):
+        if not self.reviews:
+            return
+        self.i = max(0, min(i, len(self.reviews) - 1))
+        r = self.reviews[self.i]
+        log = r["log"]
+        when = r["when"].strftime("%d %B %Y, %H:%M").lstrip("0") if r.get("when") else ""
+        self.meta.setText(" · ".join(filter(None, [f"Your session on {when}" if when else "", r.get("exercise"),
+                                                   "New" if r.get("unread") else ""])))
+        icon, color = REVIEW_LEVELS.get(log.get("level"), ("info", T.ACCENT))
+        self.status.set(icon, log.get("status_label") or "Reviewed", color)
+        _clear(self.body)
+        title = label(log.get("title", "Your session"), T.XL, True, align=LEFT)
+        self.body.addWidget(title)
+        for key, heading in REVIEW_SECTIONS:
+            if log.get(key):
+                self.body.addWidget(label(heading, T.M, True, color=T.MUTED, align=LEFT))
+                self.body.addWidget(label(str(log[key]), T.L, align=LEFT))
+        if log.get("tips"):
+            self.body.addWidget(label("For next time", T.M, True, color=T.MUTED, align=LEFT))
+            for tip in log["tips"]:
+                self.body.addWidget(label(f"•  {tip}", T.L, align=LEFT))
+        if log.get("specialist_note"):
+            note, nl = card(QHBoxLayout, margins=(24, 18, 24, 18), spacing=GAP, kind="info")
+            nl.addWidget(Icon("info", T.ACCENT, T.pt(32)), 0, Qt.AlignmentFlag.AlignTop)
+            words = QVBoxLayout()
+            words.addWidget(label("Note from your physiotherapist", T.M, True, align=LEFT))
+            words.addWidget(label(str(log["specialist_note"]), T.L, align=LEFT))
+            nl.addLayout(words, 1)
+            self.body.addWidget(note)
+        if log.get("safety_note"):
+            self.body.addWidget(label(str(log["safety_note"]), T.S, color=T.MUTED, align=LEFT))
+        self.body.addStretch(1)
+        n = len(self.reviews)
+        self.position.setText(f"{self.i + 1} of {n}")
+        for w in (self.older, self.newer, self.position):
+            w.setVisible(n > 1)
+        self.older.setEnabled(self.i < n - 1)
+        self.newer.setEnabled(self.i > 0)
+        self.opened.emit(self.i)
+
+
 # ------------------------------------------------------------------ exercise choice
 
 IMAGES = Path(__file__).with_name("images")
@@ -527,6 +640,7 @@ class ChoicePage(QWidget):
     """Display-font question, two or more large picture cards, and Back. Emits the chosen key."""
     chosen = pyqtSignal(str)
     back = pyqtSignal()
+    messages = pyqtSignal()         # open the physiotherapist's reviews
 
     def __init__(self, question: str, options: list[tuple[str, QWidget, str, str]]):
         """options: (key, picture, title, text)."""
@@ -560,9 +674,23 @@ class ChoicePage(QWidget):
         cell.addWidget(back, 3)
         cell.addStretch(2)
         brow.addLayout(cell, 1)
-        brow.addStretch(len(options) - 1)
+        # Under the last card, mirroring Back: the physiotherapist's reviews (hidden when none).
+        end = QHBoxLayout()
+        end.setContentsMargins(0, 0, T.pt(24), 0)
+        end.addStretch(1)
+        self.messages_btn = button("", "secondary", 72)
+        self.messages_btn.setIcon(qicon("info", T.pt(28), T.ACCENT))
+        self.messages_btn.setIconSize(QSize(T.pt(28), T.pt(28)))
+        self.messages_btn.clicked.connect(self.messages.emit)
+        self.messages_btn.hide()
+        end.addWidget(self.messages_btn, 4)
+        brow.addLayout(end, len(options) - 1)
         col.addLayout(brow)
         col.addStretch(3)
+
+    def set_messages(self, total: int, new: int):
+        self.messages_btn.setVisible(total > 0)
+        self.messages_btn.setText("Messages from your physiotherapist" + (f" ({new} new)" if new else ""))
 
 
 NUMBER_WORDS = {2: "Two", 3: "Three", 4: "Four", 5: "Five"}
@@ -1472,6 +1600,13 @@ class SummaryPage(QWidget):
         self.report_btn.setEnabled(path is not None)
         if path is not None:
             self.saved.setText(f"Report saved to {path}")
+            self.saved.setStyleSheet("")
+
+    def set_published(self, folder):
+        """The session reached the specialist dashboard: say so in plain words."""
+        self.saved.setText("✓ Sent to your physiotherapist for review")
+        self.saved.setStyleSheet(f"color: {T.GOOD};")
+        self.saved.setToolTip(str(folder))
 
     def _open_report(self):
         if self.report_path is not None:

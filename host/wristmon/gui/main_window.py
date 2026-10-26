@@ -17,13 +17,14 @@ from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow, QSlider, QStacked
 from .. import exercises as EX
 from ..calibration import FULL_STEPS, QUICK_STEPS, Profile, steps_for
 from ..config import resolve_dir
+from ..publish import mark_review_read, publish_root, publish_session, released_reviews
 from ..report import write_report
 from . import theme as T
 from .audio import HostAudio, Speaker
 from .branding import APP_NAME, Backdrop
 from .icons import icon_pixmap
-from .screens import (ExercisePage, LoadPage, PausePage, RestPage, RoutinePage, StartPage, SummaryPage,
-                      WizardPage, limb_page)
+from .screens import (ExercisePage, LoadPage, PausePage, RestPage, ReviewsPage, RoutinePage, StartPage,
+                      SummaryPage, WizardPage, limb_page)
 from .widgets import GlowOverlay, PacerClock
 from .worker import PipelineWorker
 
@@ -73,11 +74,16 @@ class MainWindow(QMainWindow):
         self.start_page = StartPage(EX.list_users(self.profiles_dir))
         self.limb_page = limb_page()
         self.routine_pages = {key: RoutinePage(r) for key, r in EX.ROUTINES.items()}
-        for page in (self.start_page, self.limb_page, *self.routine_pages.values()):
+        self.reviews_page = ReviewsPage()
+        self.reviews: list[dict] = []
+        for page in (self.start_page, self.limb_page, *self.routine_pages.values(), self.reviews_page):
             self.stack.addWidget(page)
         self.start_page.start.connect(self._on_start)
         self.limb_page.chosen.connect(self._on_limb)
         self.limb_page.back.connect(lambda: self.stack.setCurrentWidget(self.start_page))
+        self.limb_page.messages.connect(lambda: self._show_reviews(0))
+        self.reviews_page.opened.connect(self._review_opened)
+        self.reviews_page.done.connect(self._reviews_done)
         for key, page in self.routine_pages.items():
             page.start.connect(lambda k=key: self._start_routine(k))
             page.back.connect(lambda: self.stack.setCurrentWidget(self.limb_page))
@@ -90,6 +96,9 @@ class MainWindow(QMainWindow):
         self.backdrop = central
         self.stack.currentChanged.connect(
             lambda _: central.set_quiet(self.stack.currentWidget() in (self.wizard, self.exercise, self.summary)))
+        # Back on the choice page (e.g. after a routine): pick up reviews released meanwhile.
+        self.stack.currentChanged.connect(
+            lambda _: self._load_reviews() if self.stack.currentWidget() is self.limb_page else None)
         lay = QVBoxLayout(central)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.stack)
@@ -214,6 +223,42 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ flow
     def _on_start(self, name: str):
         self.user_name = name
+        self._load_reviews()
+        new = [i for i, r in enumerate(self.reviews) if r["unread"]]
+        if new:     # a new message from the physiotherapist comes first
+            self._show_reviews(new[0])
+        else:
+            self.stack.setCurrentWidget(self.limb_page)
+
+    # ------------------------------------------------------------ physiotherapist's reviews
+    def _load_reviews(self):
+        """Reviews the specialist released on the dashboard for this patient (none when
+        publishing is off or the folder cannot be read)."""
+        root = publish_root(self.base_cfg)
+        try:
+            self.reviews = released_reviews(root, self.user_name) if root and self.user_name else []
+        except OSError:
+            self.reviews = []
+        self._update_messages_button()
+
+    def _update_messages_button(self):
+        self.limb_page.set_messages(len(self.reviews), sum(r["unread"] for r in self.reviews))
+
+    def _show_reviews(self, index: int):
+        if self.reviews:
+            self.stack.setCurrentWidget(self.reviews_page)
+            self.reviews_page.set_reviews(self.reviews, index)
+
+    def _review_opened(self, index: int):
+        root = publish_root(self.base_cfg)
+        if root and 0 <= index < len(self.reviews):
+            try:
+                mark_review_read(root, self.user_name, self.reviews[index])
+            except OSError:
+                pass        # reading it still works; only the "read" receipt is lost
+        self._update_messages_button()
+
+    def _reviews_done(self):
         self.stack.setCurrentWidget(self.limb_page)
 
     def _on_limb(self, limb: str):
@@ -309,6 +354,21 @@ class MainWindow(QMainWindow):
             self._on_error(f"report: {e}")
             path = None
         self.summary.set_report(path)
+        if path is not None:
+            self._publish(path, summary)
+
+    def _publish(self, report_path, summary: dict):
+        """Hand the session to the specialist dashboard (every summary, also demo skips)."""
+        root = publish_root(self.cfg)
+        if root is None or self.mode == "replay":
+            return
+        try:
+            dest = publish_session(root, self.user_name or "guest", report_path, self.session_dir,
+                                   EX.get(self.exercise_key).title, self.exercise_key, summary)
+        except Exception as e:      # a missing dashboard folder must never block the summary
+            self._on_error(f"send to specialist: {e}")
+            return
+        self.summary.set_published(dest)
 
     def _resume(self):
         self.worker.call("session_action", "resume")

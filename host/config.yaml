@@ -174,3 +174,7 @@ logging:
   enabled: true
   dir: sessions
   profiles_dir: profiles
+
+publish:
+  enabled: true             # after every summary, hand the session to the specialist dashboard
+  dir: ../../kinesis-public-demo/report   # -> report/<patient>/se<session log>/ (relative to host/)

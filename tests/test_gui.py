@@ -25,6 +25,15 @@ def app():
     return a
 
 
+def _isolated(base_cfg, tmp_path):
+    """Profiles, demo reports and the specialist hand-over all go to tmp_path, never to
+    the real host/sessions or kinesis-public-demo/report folders."""
+    return dict(base_cfg,
+                logging=dict(base_cfg["logging"], enabled=False, dir=str(tmp_path / "sessions"),
+                             profiles_dir=str(tmp_path / "profiles")),
+                publish=dict(base_cfg.get("publish", {}), dir=str(tmp_path / "report")))
+
+
 def pump(app, seconds, until=None):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -38,8 +47,7 @@ def pump(app, seconds, until=None):
 def test_exercise_screen_counts_and_fps(app, long_set_cfg, tmp_path):
     from wristmon.gui.main_window import MainWindow
     profile = run_simulated_session(long_set_cfg, ["good"], seed=7).pipeline.profile
-    cfg = dict(long_set_cfg, logging=dict(long_set_cfg["logging"], enabled=False,
-                                          profiles_dir=str(tmp_path / "profiles")))
+    cfg = _isolated(long_set_cfg, tmp_path)
     win = MainWindow(cfg, SimSource(seed=7, realtime=True), "sim", auto_reps=False)
     win.resize(1600, 1000)
     win.show()
@@ -66,8 +74,7 @@ def test_arm_routine_runs_its_exercises_in_turn_by_rep_count(app, long_set_cfg, 
     from wristmon import exercises as EX
     from wristmon.gui.main_window import MainWindow
     from wristmon.gui.widgets import CurlView
-    cfg = dict(long_set_cfg, logging=dict(long_set_cfg["logging"], enabled=False,
-                                          profiles_dir=str(tmp_path / "profiles")))
+    cfg = _isolated(long_set_cfg, tmp_path)
     win = MainWindow(cfg, SimSource(seed=7, realtime=True), "sim")
     win.resize(1600, 1000)
     win.show()
@@ -119,8 +126,7 @@ def test_leg_routine_starts_with_quad_sets_counted_from_the_muscle(app, long_set
                                     tempo=c["exercise"]["tempo"]).pipeline.profile
     profile.user = "Ann"
     EX.save_profile(tmp_path / "profiles", profile, key)
-    cfg = dict(long_set_cfg, logging=dict(long_set_cfg["logging"], enabled=False,
-                                          profiles_dir=str(tmp_path / "profiles")))
+    cfg = _isolated(long_set_cfg, tmp_path)
     win = MainWindow(cfg, SimSource(seed=7, realtime=True), "sim")
     win.resize(1600, 1000)
     win.show()
@@ -149,6 +155,42 @@ def test_leg_routine_starts_with_quad_sets_counted_from_the_muscle(app, long_set
         win.exercise.skip.emit()          # mid-set: the set is logged, then straight to the next one
         assert pump(app, 5, lambda: win.exercise_key == "straight_leg_raise")
         assert win.stack.currentWidget() is win.load_page
+    finally:
+        win.close()
+        pump(app, 0.5)
+
+
+def test_new_review_from_the_physiotherapist_is_shown_after_the_name(app, long_set_cfg, tmp_path):
+    import json
+    from wristmon.gui.main_window import MainWindow
+    cfg = _isolated(long_set_cfg, tmp_path)
+    d = tmp_path / "report" / "yk" / "se20261024_100000"
+    d.mkdir(parents=True)
+    (d / "patient_log.json").write_text(json.dumps({
+        "title": "Your Bicep curls session", "summary": "You completed 14 repetitions.",
+        "tips": ["Lift slowly."], "specialist_note": "Continue with a heavier weight.",
+        "status_label": "Continue with changes", "level": "yellow", "released": True,
+        "released_at": "2026-10-26T08:17:00+00:00"}), encoding="utf-8")
+    win = MainWindow(cfg, SimSource(seed=7, realtime=True), "sim", auto_reps=False)
+    win.resize(1600, 1000)
+    win.show()
+    try:
+        win._on_start("yk")
+        page = win.reviews_page
+        assert win.stack.currentWidget() is page
+        assert page.status.text.text() == "Continue with changes"
+        assert "New" in page.meta.text() and "24 October 2026" in page.meta.text()
+        texts = [w.text() for w in page.findChildren(type(page.meta))]
+        assert "Continue with a heavier weight." in texts and "•  Lift slowly." in texts
+        assert (d / "patient_read.json").exists()             # the dashboard shows it was read
+        page.done.emit()
+        assert win.stack.currentWidget() is win.limb_page
+        btn = win.limb_page.messages_btn
+        assert btn.isVisibleTo(win.limb_page) and btn.text() == "Messages from your physiotherapist"
+        win._on_start("yk")                                    # already read: straight to the choice
+        assert win.stack.currentWidget() is win.limb_page
+        win.limb_page.messages.emit()                          # but it can be opened again
+        assert win.stack.currentWidget() is page
     finally:
         win.close()
         pump(app, 0.5)
